@@ -1,0 +1,6 @@
+{
+  "name": "Instant File Share",
+  "description": "An interactive web tool to exchange files instantly between mobile and PC using short rooms or transfer codes, supporting fast uploads, downloads, and immediate deletions.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
