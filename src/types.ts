@@ -15,7 +15,7 @@ export interface ChatMessage {
   id: string;
   senderId: string;
   senderName: string;
-  type: "text" | "voice" | "image";
+  type: "text" | "voice" | "image" | "file_request";
   content: string; // text, or base64 audio/image
   createdAt: number;
 }

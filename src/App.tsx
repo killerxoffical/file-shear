@@ -36,7 +36,9 @@ import {
   Volume2,
   HardDrive,
   MessageSquare,
-  Clock
+  Clock,
+  FileSearch,
+  Upload
 } from "lucide-react";
 import { FileMeta, RoomState } from "./types";
 import { formatBytes, getFileIcon, formatTimeRemaining } from "./utils";
@@ -245,7 +247,7 @@ export default function App() {
   }, []);
 
   // Live Chat Delivery integration endpoint Caller
-  const sendChatMessage = async (type: "text" | "voice" | "image" = "text", customContent?: string) => {
+  const sendChatMessage = async (type: "text" | "voice" | "image" | "file_request" = "text", customContent?: string) => {
     if (!currentRoomCode) return;
     
     const contentToSend = customContent !== undefined ? customContent : chatInputText;
@@ -2163,6 +2165,31 @@ export default function App() {
                                     />
                                   </div>
                                 )}
+
+                                {msg.type === "file_request" && (
+                                  <div className="flex flex-col gap-2 p-1.5 min-w-[200px]">
+                                    <div className="flex items-center gap-2">
+                                      <div className={`p-1.5 rounded-full ${isMe ? 'bg-white/20' : 'bg-blue-100 dark:bg-blue-900/50'}`}>
+                                        <FileSearch className={`h-4 w-4 ${isMe ? 'text-white' : 'text-blue-600 dark:text-blue-400'}`} />
+                                      </div>
+                                      <span className="font-bold text-[11px] leading-tight">
+                                        {isMe 
+                                          ? (language === "bn" ? "আপনি ফাইল আপলোড করতে রিকোয়েস্ট পাঠিয়েছেন" : "Requested remote file upload") 
+                                          : (language === "bn" ? "আপনার কাছে ফাইল আপলোডের রিকোয়েস্ট এসেছে" : "Requested you to upload a file")}
+                                      </span>
+                                    </div>
+                                    
+                                    {!isMe && (
+                                      <button
+                                        onClick={() => fileInputRef.current?.click()}
+                                        className="mt-1 w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 px-3 rounded-lg text-[10px] uppercase tracking-wider transition-all shadow-sm flex items-center justify-center gap-1.5 border border-blue-500"
+                                      >
+                                        <Upload className="h-3.5 w-3.5" />
+                                        <span>{language === "bn" ? "ক্লিক করে ফাইল সিলেক্ট করুন" : "Select & Upload File"}</span>
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
                               </div>
 
                               {/* Formatted absolute date stamp */}
@@ -2214,6 +2241,20 @@ export default function App() {
                         className="hidden" 
                       />
                       
+                      {/* Request File button */}
+                      <button
+                        onClick={() => sendChatMessage("file_request", "File Request")}
+                        disabled={isRecording}
+                        className={`p-2.5 rounded-xl border transition-all cursor-pointer focus:outline-none disabled:opacity-40 shrink-0 ${
+                          theme === "dark" 
+                            ? "border-slate-800 bg-slate-900 hover:bg-slate-850 hover:border-slate-700 text-slate-400" 
+                            : "border-slate-200 bg-white hover:bg-slate-100 hover:border-slate-300 text-slate-505"
+                        }`}
+                        title={language === "bn" ? "অন্য ডিভাইস থেকে ফাইল চান" : "Request File Context"}
+                      >
+                        <FileSearch className="h-4 w-4 text-emerald-500" />
+                      </button>
+
                       {/* Attach image asset button */}
                       <button
                         onClick={() => chatImageInputRef.current?.click()}

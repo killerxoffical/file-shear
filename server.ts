@@ -6,7 +6,7 @@ import multer from "multer";
 import { createServer as createViteServer } from "vite";
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // Derive dynamic __dirname compatibility for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -37,7 +37,7 @@ interface ChatMessage {
   id: string;
   senderId: string;
   senderName: string;
-  type: "text" | "voice" | "image";
+  type: "text" | "voice" | "image" | "file_request";
   content: string; // Base64 audio/image or text
   createdAt: number;
 }
