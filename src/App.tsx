@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { Html5Qrcode } from "html5-qrcode";
 import { auth, loginWithGoogle, logout, db } from "./firebase";
 import { onAuthStateChanged, User } from "firebase/auth";
-import { doc, onSnapshot, setDoc, updateDoc } from "firebase/firestore";
+import { doc, onSnapshot, setDoc, updateDoc, collection, getDocs } from "firebase/firestore";
 import { LandingPage } from "./LandingPage";
 import { AuthModal } from "./AuthModal";
 import { 
@@ -122,6 +122,8 @@ export default function App() {
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [showAdminPanel, setShowAdminPanel] = useState<boolean>(false);
   const [adminData, setAdminData] = useState<any>(null);
+  const [adminUsers, setAdminUsers] = useState<any[]>([]);
+  const [adminTab, setAdminTab] = useState<"rooms" | "users">("rooms");
 
   const [currentRoomCode, setCurrentRoomCode] = useState<string | null>(null);
   const [roomData, setRoomData] = useState<RoomState | null>(null);
@@ -1408,13 +1410,24 @@ export default function App() {
             {currentUser ? (
               <div className="flex items-center gap-2 mr-2">
                 {currentUser.email === "smbadsha544@gmail.com" && (
-                  <button onClick={() => {
+                  <button onClick={async () => {
                     setShowAdminPanel(true);
+                    setAdminTab("rooms");
                     fetch('/api/admin/system_state', {
                       headers: { 'x-admin-email': currentUser.email || "" }
                     }).then(res => res.json()).then(data => {
                       setAdminData(data.data.rooms);
                     });
+                    try {
+                      const querySnapshot = await getDocs(collection(db, "users"));
+                      const usersList: any[] = [];
+                      querySnapshot.forEach((doc) => {
+                        usersList.push({ id: doc.id, ...doc.data() });
+                      });
+                      setAdminUsers(usersList);
+                    } catch (error) {
+                      console.error("Error fetching users:", error);
+                    }
                   }} className="text-[10px] font-bold px-2.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg cursor-pointer uppercase tracking-wider shadow-sm transition-colors">
                     Admin
                   </button>
@@ -3156,50 +3169,122 @@ export default function App() {
               </button>
             </div>
 
-            <div className="flex-1 overflow-auto pr-2">
-              {!adminData ? (
-                <div className="flex justify-center py-20 text-slate-500 items-center gap-2">
-                  <RefreshCw className="h-5 w-5 animate-spin" /> Loading node states...
-                </div>
-              ) : (
-                <div className="space-y-6">
-                  {Object.keys(adminData).length === 0 && (
-                    <div className="text-center py-10 opacity-60">No active rooms currently stored in memory.</div>
-                  )}
-                  {Object.values(adminData).map((room: any) => (
-                    <div key={room.code} className={`p-4 rounded-xl border ${theme === 'dark' ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
-                      <div className="flex justify-between items-start mb-4">
-                        <div>
-                          <h3 className="text-lg font-bold font-mono text-blue-500">Room: {room.code}</h3>
-                          <p className="text-xs opacity-60">Created: {new Date(room.createdAt).toLocaleString()}</p>
-                          <p className="text-xs opacity-60">Passcode Protected: {room.passcode ? "Yes" : "No"}</p>
-                        </div>
-                        <div className="text-right">
-                          <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 rounded bg-slate-200 dark:bg-slate-800">
-                            {Object.keys(room.files || {}).length} Files
-                          </span>
-                        </div>
-                      </div>
+            <div className="flex gap-4 mb-4 border-b border-slate-200 dark:border-slate-800">
+              <button 
+                onClick={() => setAdminTab("rooms")}
+                className={`pb-2 text-sm font-bold border-b-2 transition-colors ${adminTab === "rooms" ? "border-blue-500 text-blue-500" : "border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"}`}
+              >
+                Live Rooms {adminData ? `(${Object.keys(adminData).length})` : ""}
+              </button>
+              <button 
+                onClick={() => setAdminTab("users")}
+                className={`pb-2 text-sm font-bold border-b-2 transition-colors ${adminTab === "users" ? "border-blue-500 text-blue-500" : "border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"}`}
+              >
+                Users List
+              </button>
+            </div>
 
-                      {Object.keys(room.files || {}).length > 0 && (
-                        <div className="mt-4">
-                          <h4 className="text-xs font-bold uppercase tracking-wider mb-2 opacity-70">Files In Room</h4>
-                          <div className="space-y-2">
-                            {Object.values(room.files).map((file: any) => (
-                              <div key={file.id} className={`p-3 rounded-lg border flex justify-between items-center ${theme === 'dark' ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'}`}>
-                                <div className="truncate pr-4 flex-1">
-                                  <p className="text-sm font-medium truncate">{file.name}</p>
-                                  <p className="text-[10px] opacity-60 font-mono">{formatBytes(file.size)} • {file.mimeType}</p>
-                                </div>
-                                <div className="text-right whitespace-nowrap">
-                                  <p className="text-[10px] opacity-60">Downloads: {file.downloadCount}/{file.maxDownloads || "∞"}</p>
-                                  <p className="text-[10px] text-rose-500">Expires: {new Date(file.expiresAt).toLocaleTimeString()}</p>
-                                </div>
-                              </div>
-                            ))}
+            <div className="flex-1 overflow-auto pr-2">
+              {adminTab === "rooms" && (
+                !adminData ? (
+                  <div className="flex justify-center py-20 text-slate-500 items-center gap-2">
+                    <RefreshCw className="h-5 w-5 animate-spin" /> Loading node states...
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    {Object.keys(adminData).length === 0 && (
+                      <div className="text-center py-10 opacity-60">No active rooms currently stored in memory.</div>
+                    )}
+                    {Object.values(adminData).map((room: any) => (
+                      <div key={room.code} className={`p-4 rounded-xl border ${theme === 'dark' ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
+                        <div className="flex justify-between items-start mb-4">
+                          <div>
+                            <h3 className="text-lg font-bold font-mono text-blue-500">Room: {room.code}</h3>
+                            <p className="text-xs opacity-60">Created: {new Date(room.createdAt).toLocaleString()}</p>
+                            <p className="text-xs opacity-60">Passcode Protected: {room.passcode ? "Yes" : "No"}</p>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 rounded bg-slate-200 dark:bg-slate-800">
+                              {Object.keys(room.files || {}).length} Files
+                            </span>
                           </div>
                         </div>
-                      )}
+
+                        {Object.keys(room.files || {}).length > 0 && (
+                          <div className="mt-4">
+                            <h4 className="text-xs font-bold uppercase tracking-wider mb-2 opacity-70">Files In Room</h4>
+                            <div className="space-y-2">
+                              {Object.values(room.files).map((file: any) => (
+                                <div key={file.id} className={`p-3 rounded-lg border flex justify-between items-center ${theme === 'dark' ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'}`}>
+                                  <div className="truncate pr-4 flex-1">
+                                    <p className="text-sm font-medium truncate">{file.name}</p>
+                                    <p className="text-[10px] opacity-60 font-mono">{formatBytes(file.size)} • {file.mimeType}</p>
+                                  </div>
+                                  <div className="text-right whitespace-nowrap">
+                                    <p className="text-[10px] opacity-60">Downloads: {file.downloadCount}/{file.maxDownloads || "∞"}</p>
+                                    <p className="text-[10px] text-rose-500">Expires: {new Date(file.expiresAt).toLocaleTimeString()}</p>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )
+              )}
+
+              {adminTab === "users" && (
+                <div className="space-y-4">
+                  {adminUsers.length === 0 && (
+                    <div className="text-center py-10 opacity-60">No users found.</div>
+                  )}
+                  {adminUsers.map((user: any) => (
+                    <div key={user.id} className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${theme === 'dark' ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
+                      <div>
+                        <p className="text-sm font-bold text-blue-500">{user.email}</p>
+                        <p className="text-xs opacity-60 font-mono">UID: {user.id}</p>
+                        <p className="text-xs opacity-60">Joined: {user.createdAt ? new Date(user.createdAt).toLocaleDateString() : "Unknown"}</p>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="flex flex-col items-center">
+                          <span className="text-[10px] uppercase font-bold text-slate-500 mb-1">Credits</span>
+                          <span className="text-lg font-mono font-bold text-amber-500 bg-amber-500/10 px-3 py-1 rounded border border-amber-500/20">{user.credits || 0}</span>
+                        </div>
+                        <div className="flex flex-col gap-2">
+                          <button
+                            onClick={async () => {
+                              const newAmount = (user.credits || 0) + 100;
+                              try {
+                                await updateDoc(doc(db, "users", user.id), { credits: newAmount });
+                                setAdminUsers(prev => prev.map(u => u.id === user.id ? { ...u, credits: newAmount } : u));
+                                showStatus("Added 100 credits", "success");
+                              } catch(e) {
+                                showStatus("Failed to add", "error");
+                              }
+                            }}
+                            className={`px-3 py-1 text-xs font-bold rounded cursor-pointer transition-colors ${theme === "dark" ? "bg-slate-700 hover:bg-slate-600 text-white" : "bg-white hover:bg-slate-100 border border-slate-200"}`}
+                          >
+                            +100
+                          </button>
+                          <button
+                            onClick={async () => {
+                              const newAmount = (user.credits || 0) + 500;
+                              try {
+                                await updateDoc(doc(db, "users", user.id), { credits: newAmount });
+                                setAdminUsers(prev => prev.map(u => u.id === user.id ? { ...u, credits: newAmount } : u));
+                                showStatus("Added 500 credits", "success");
+                              } catch(e) {
+                                showStatus("Failed to add", "error");
+                              }
+                            }}
+                            className="px-3 py-1 text-xs font-bold rounded cursor-pointer transition-colors bg-blue-600 hover:bg-blue-500 text-white"
+                          >
+                            +500
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -3209,13 +3294,23 @@ export default function App() {
             <div className="mt-6 pt-4 border-t border-slate-200 dark:border-slate-800 flex justify-between items-center">
               <span className="text-[10px] opacity-60 font-mono">Real-time memory tracking disabled. Refresh manually.</span>
               <button 
-                onClick={() => {
+                onClick={async () => {
                   setAdminData(null);
                   fetch('/api/admin/system_state', {
                     headers: { 'x-admin-email': currentUser?.email || "" }
                   }).then(res => res.json()).then(data => {
                     setAdminData(data.data.rooms);
                   });
+                  try {
+                    const querySnapshot = await getDocs(collection(db, "users"));
+                    const usersList: any[] = [];
+                    querySnapshot.forEach((doc) => {
+                      usersList.push({ id: doc.id, ...doc.data() });
+                    });
+                    setAdminUsers(usersList);
+                  } catch (error) {
+                    console.error("Error fetching users:", error);
+                  }
                 }}
                 className="px-4 py-2 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 rounded-lg text-xs font-bold cursor-pointer transition-colors"
               >
