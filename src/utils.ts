@@ -86,3 +86,23 @@ export function formatTimeRemaining(expiresAt: number): string {
   }
   return `${seconds}s`;
 }
+
+/**
+ * Formats a date into a relative time string
+ */
+export function formatRelativeTime(dateString: string | number | Date, language: "en" | "bn" = "en"): string {
+  const diff = Date.now() - new Date(dateString).getTime();
+  const minutes = Math.floor(diff / 60000);
+  const hours = Math.floor(minutes / 60);
+
+  if (minutes < 1) {
+    return language === "bn" ? "এইমাত্র" : "Just now";
+  }
+  if (minutes < 60) {
+    return language === "bn" ? `${minutes} মিনিট আগে` : `${minutes}m ago`;
+  }
+  if (hours < 24) {
+    return language === "bn" ? `${hours} ঘণ্টা আগে` : `${hours}h ago`;
+  }
+  return new Date(dateString).toLocaleDateString();
+}

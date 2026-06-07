@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, useMemo } from "react";
 import QRCode from "qrcode";
 import { motion, AnimatePresence } from "motion/react";
 import { Html5Qrcode } from "html5-qrcode";
+import { auth, loginWithGoogle, logout } from "./firebase";
+import { onAuthStateChanged, User } from "firebase/auth";
 import { 
   FileUp, 
   Download, 
@@ -41,7 +43,7 @@ import {
   Upload
 } from "lucide-react";
 import { FileMeta, RoomState } from "./types";
-import { formatBytes, getFileIcon, formatTimeRemaining } from "./utils";
+import { formatBytes, getFileIcon, formatTimeRemaining, formatRelativeTime } from "./utils";
 
 // Play standard high-quality subtle chime sound using browser Web Audio API
 const playNotificationSound = () => {
@@ -111,8 +113,20 @@ export default function App() {
   }, []);
 
   // App navigation state
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [showAdminPanel, setShowAdminPanel] = useState<boolean>(false);
+  const [adminData, setAdminData] = useState<any>(null);
+
   const [currentRoomCode, setCurrentRoomCode] = useState<string | null>(null);
   const [roomData, setRoomData] = useState<RoomState | null>(null);
+
+  // Auth listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+    });
+    return () => unsubscribe();
+  }, []);
   
   // Forms & Inputs
   const [roomIdInput, setRoomIdInput] = useState<string>("");
@@ -190,6 +204,15 @@ export default function App() {
   
   // Timer ticking for countdown remaining
   const [tick, setTick] = useState<number>(0);
+
+  const [useRelativeChatTime, setUseRelativeChatTime] = useState<boolean>(() => {
+    const saved = localStorage.getItem("app-relative-time");
+    return saved ? saved === "true" : true;
+  });
+
+  useEffect(() => {
+    localStorage.setItem("app-relative-time", String(useRelativeChatTime));
+  }, [useRelativeChatTime]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const seenFileIdsRef = useRef<Set<string>>(new Set());
@@ -1290,6 +1313,38 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2.5">
+            {/* Auth panel */}
+            {currentUser ? (
+              <div className="flex items-center gap-2 mr-2">
+                {currentUser.email === "smbadsha544@gmail.com" && (
+                  <button onClick={() => {
+                    setShowAdminPanel(true);
+                    currentUser.getIdToken().then(token => {
+                      fetch('/api/admin/system_state', {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                      }).then(res => res.json()).then(data => {
+                        setAdminData(data.data.rooms);
+                      });
+                    });
+                  }} className="text-[10px] font-bold px-2.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg cursor-pointer uppercase tracking-wider shadow-sm transition-colors">
+                    Admin
+                  </button>
+                )}
+                <div className={`hidden sm:flex items-center gap-2 px-2.5 py-1.5 rounded-lg border ${theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+                  <span className="text-[10px] font-bold truncate max-w-[100px]">{currentUser.displayName || currentUser.email}</span>
+                  <button onClick={logout} className="text-[10px] uppercase font-bold text-slate-500 hover:text-rose-500 cursor-pointer pl-2 border-l border-slate-300 dark:border-slate-600">Log Out</button>
+                </div>
+              </div>
+            ) : (
+              <button 
+                onClick={loginWithGoogle}
+                className="flex items-center mr-2 gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold cursor-pointer transition-colors shadow-sm"
+                title="Login with Google"
+              >
+                Log In
+              </button>
+            )}
+
             {/* Theme switcher toggle button */}
             <button
               onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
@@ -1495,20 +1550,31 @@ export default function App() {
 
                   <div className="flex flex-col gap-2.5">
                     <div className="flex gap-2">
-                      <input
-                        type="text"
-                        maxLength={4}
-                        value={roomIdInput}
-                        onChange={(e) => setRoomIdInput(e.target.value.replace(/\D/g, ""))}
-                        onKeyDown={(e) => e.key === "Enter" && joinRoom()}
-                        placeholder={text.codePlaceholder[language]}
-                        className={`flex-1 px-4 py-3 border rounded-xl font-mono text-center text-base focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-bold transition-all ${
-                          theme === "dark" 
-                            ? "bg-slate-850 border-slate-700 text-white placeholder-slate-550" 
-                            : "bg-slate-50 border-slate-200 text-slate-950 placeholder-slate-400"
-                        }`}
-                        id="room-code-input"
-                      />
+                      <div className="relative flex-1">
+                        <input
+                          type="text"
+                          maxLength={4}
+                          value={roomIdInput}
+                          onChange={(e) => setRoomIdInput(e.target.value.replace(/\D/g, ""))}
+                          onKeyDown={(e) => e.key === "Enter" && joinRoom()}
+                          placeholder={text.codePlaceholder[language]}
+                          className={`w-full px-4 pl-10 pr-10 py-3 border rounded-xl font-mono text-center text-base focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-bold transition-all ${
+                            theme === "dark" 
+                              ? "bg-slate-850 border-slate-700 text-white placeholder-slate-550" 
+                              : "bg-slate-50 border-slate-200 text-slate-950 placeholder-slate-400"
+                          }`}
+                          id="room-code-input"
+                        />
+                        <button
+                          onClick={() => setShowScanner(true)}
+                          className={`absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg transition-colors cursor-pointer ${
+                            theme === "dark" ? "text-slate-400 hover:text-blue-400 hover:bg-slate-800" : "text-slate-500 hover:text-blue-600 hover:bg-slate-200"
+                          }`}
+                          title={text.scanQrBtn[language]}
+                        >
+                          <Camera className="h-4.5 w-4.5" />
+                        </button>
+                      </div>
                       <button
                         onClick={() => setShowScanner(true)}
                         className={`px-4 py-3 rounded-xl font-bold border transition-all text-xs uppercase tracking-wider shrink-0 flex items-center justify-center gap-1.5 cursor-pointer ${
@@ -1754,22 +1820,35 @@ export default function App() {
                   </div>
 
                   {/* Warning visual alert pop if room capacity almost loaded or exceeds */}
-                  {totalBytesUsed >= 85 * 1024 * 1024 && (
-                    <div className={`p-4 rounded-xl border flex items-start gap-3 text-left animate-fade-in ${
+                  {totalBytesUsed >= 90 * 1024 * 1024 && (
+                    <div className={`p-4 rounded-xl border flex flex-col gap-3 text-left animate-fade-in ${
                       theme === "dark" 
                         ? "bg-rose-950/40 border-rose-900/40 text-rose-300" 
                         : "bg-rose-50 border-rose-150 text-rose-800"
                     }`} id="storage-limit-warning-block">
-                      <AlertCircle className="h-5 w-5 text-rose-500 shrink-0 mt-0.5" />
-                      <div className="flex flex-col">
-                        <span className="font-bold text-xs">
-                          {language === "bn" ? "স্টোরেজ প্রায় সম্পূর্ণ!" : "Storage Space Warning!"}
-                        </span>
-                        <span className="text-[11px] leading-relaxed mt-1 opacity-85 font-medium">
-                          {language === "bn" 
-                            ? "আপনার রুমের সর্বোচ্চ ১০০ মেগাবাইট সাইজ লিমিটের প্রায় সবটুকুই ব্যবহৃত হয়েছে। নতুন ফাইল পোস্ট বা আপলোড করতে হলে ডিলিট আইকনে ট্যাপ করে পুরাতন ডাটা রিমুভ করুন।" 
-                            : "Your 100MB temporary room segment memory is heavily filled. You must clear/delete older elements using the trash can before pushing newly staged files."}
-                        </span>
+                      <div className="flex items-start gap-3">
+                        <AlertCircle className="h-5 w-5 text-rose-500 shrink-0 mt-0.5" />
+                        <div className="flex flex-col w-full">
+                          <div className="flex justify-between items-center w-full">
+                            <span className="font-bold text-xs">
+                              {language === "bn" ? "স্টোরেজ প্রায় সম্পূর্ণ!" : "Storage Space Warning!"}
+                            </span>
+                            <span className="text-[10px] font-mono font-bold text-rose-500">
+                              {Math.round((totalBytesUsed / (100 * 1024 * 1024)) * 100)}%
+                            </span>
+                          </div>
+                          <span className="text-[11px] leading-relaxed mt-1 opacity-85 font-medium">
+                            {language === "bn" 
+                              ? "আপনার রুমের সর্বোচ্চ ১০০ মেগাবাইট সাইজ লিমিটের প্রায় সবটুকুই ব্যবহৃত হয়েছে। নতুন ফাইল পোস্ট বা আপলোড করতে হলে ডিলিট আইকনে ট্যাপ করে পুরাতন ডাটা রিমুভ করুন।" 
+                              : "Your 100MB temporary room capacity is nearing its limit. Please clean up older files to continue uploading."}
+                          </span>
+                        </div>
+                      </div>
+                      <div className={`h-1.5 w-full rounded-full overflow-hidden ${theme === 'dark' ? 'bg-rose-900/50' : 'bg-rose-200'}`}>
+                        <div 
+                          className="h-full bg-rose-500 rounded-full transition-all duration-500"
+                          style={{ width: `${Math.min(100, (totalBytesUsed / (100 * 1024 * 1024)) * 100)}%` }}
+                        />
                       </div>
                     </div>
                   )}
@@ -2089,10 +2168,20 @@ export default function App() {
                         </div>
                       </div>
                       
-                      {/* 1H Room limit marker count */}
-                      <div className="flex items-center gap-1 font-mono text-[9px] text-slate-400 bg-slate-100 dark:bg-slate-950 px-2.5 py-1 border dark:border-slate-800 rounded-lg">
-                        <Clock className="h-3 w-3 text-amber-500" />
-                        <span>1H LIMIT</span>
+                      {/* 1H Room limit marker count and Time Setting Toggle */}
+                      <div className="flex items-center gap-2">
+                        <button 
+                          onClick={() => setUseRelativeChatTime(!useRelativeChatTime)}
+                          className="flex items-center gap-1 font-mono text-[9px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 bg-slate-100 dark:bg-slate-950 px-2.5 py-1 border dark:border-slate-800 rounded-lg transition-colors cursor-pointer"
+                          title={language === "bn" ? "সময়ের ধরন পরিবর্তন করুন" : "Toggle Time Format"}
+                        >
+                          <Clock className="h-3 w-3" />
+                          <span>{useRelativeChatTime ? (language === "bn" ? "রিলেটিভ" : "REL") : (language === "bn" ? "অ্যাবসলিউট" : "ABS")}</span>
+                        </button>
+                        <div className="flex items-center gap-1 font-mono text-[9px] text-slate-400 bg-slate-100 dark:bg-slate-950 px-2.5 py-1 border dark:border-slate-800 rounded-lg">
+                          <Clock className="h-3 w-3 text-amber-500" />
+                          <span>1H LIMIT</span>
+                        </div>
                       </div>
                     </div>
 
@@ -2192,9 +2281,12 @@ export default function App() {
                                 )}
                               </div>
 
-                              {/* Formatted absolute date stamp */}
+                              {/* Formatted time stamp */}
                               <span className="text-[8px] text-slate-450 mt-0.5 px-1 font-mono">
-                                {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                {useRelativeChatTime 
+                                  ? formatRelativeTime(msg.createdAt, language) 
+                                  : new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                }
                               </span>
                             </div>
                           );
@@ -2900,6 +2992,96 @@ export default function App() {
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* Admin Panel Modal */}
+      {showAdminPanel && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex layout items-center justify-center p-4 z-50">
+          <div className={`rounded-3xl p-6 sm:p-8 w-full max-w-4xl max-h-[85vh] overflow-hidden flex flex-col shadow-2xl relative transition-colors duration-300 ${theme === "dark" ? "bg-slate-900 border border-slate-800 text-white" : "bg-white border border-slate-200 text-slate-900"}`}>
+            
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <Shield className="h-6 w-6 text-rose-500" />
+                Admin System Dashboard
+              </h2>
+              <button 
+                onClick={() => setShowAdminPanel(false)}
+                className={`p-2 rounded-full cursor-pointer transition-all ${theme === "dark" ? "hover:bg-slate-800 text-slate-400" : "hover:bg-slate-100 text-slate-600"}`}
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-auto pr-2">
+              {!adminData ? (
+                <div className="flex justify-center py-20 text-slate-500 items-center gap-2">
+                  <RefreshCw className="h-5 w-5 animate-spin" /> Loading node states...
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {Object.keys(adminData).length === 0 && (
+                    <div className="text-center py-10 opacity-60">No active rooms currently stored in memory.</div>
+                  )}
+                  {Object.values(adminData).map((room: any) => (
+                    <div key={room.code} className={`p-4 rounded-xl border ${theme === 'dark' ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
+                      <div className="flex justify-between items-start mb-4">
+                        <div>
+                          <h3 className="text-lg font-bold font-mono text-blue-500">Room: {room.code}</h3>
+                          <p className="text-xs opacity-60">Created: {new Date(room.createdAt).toLocaleString()}</p>
+                          <p className="text-xs opacity-60">Passcode Protected: {room.passcode ? "Yes" : "No"}</p>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 rounded bg-slate-200 dark:bg-slate-800">
+                            {Object.keys(room.files || {}).length} Files
+                          </span>
+                        </div>
+                      </div>
+
+                      {Object.keys(room.files || {}).length > 0 && (
+                        <div className="mt-4">
+                          <h4 className="text-xs font-bold uppercase tracking-wider mb-2 opacity-70">Files In Room</h4>
+                          <div className="space-y-2">
+                            {Object.values(room.files).map((file: any) => (
+                              <div key={file.id} className={`p-3 rounded-lg border flex justify-between items-center ${theme === 'dark' ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'}`}>
+                                <div className="truncate pr-4 flex-1">
+                                  <p className="text-sm font-medium truncate">{file.name}</p>
+                                  <p className="text-[10px] opacity-60 font-mono">{formatBytes(file.size)} • {file.mimeType}</p>
+                                </div>
+                                <div className="text-right whitespace-nowrap">
+                                  <p className="text-[10px] opacity-60">Downloads: {file.downloadCount}/{file.maxDownloads || "∞"}</p>
+                                  <p className="text-[10px] text-rose-500">Expires: {new Date(file.expiresAt).toLocaleTimeString()}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-6 pt-4 border-t border-slate-200 dark:border-slate-800 flex justify-between items-center">
+              <span className="text-[10px] opacity-60 font-mono">Real-time memory tracking disabled. Refresh manually.</span>
+              <button 
+                onClick={() => {
+                  setAdminData(null);
+                  currentUser?.getIdToken().then(token => {
+                    fetch('/api/admin/system_state', {
+                      headers: { 'Authorization': `Bearer ${token}` }
+                    }).then(res => res.json()).then(data => {
+                      setAdminData(data.data.rooms);
+                    });
+                  });
+                }}
+                className="px-4 py-2 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 rounded-lg text-xs font-bold cursor-pointer transition-colors"
+              >
+                Refresh Data
+              </button>
+            </div>
           </div>
         </div>
       )}

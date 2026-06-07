@@ -3,6 +3,10 @@ import path from "path";
 import fs from "fs";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
+import * as admin from "firebase-admin";
+
+// Initialize Firebase Admin with Application Default Credentials
+admin.initializeApp();
 
 const app = express();
 // Render automatically provides process.env.RENDER. For AI Studio we must strictly use 3000.
@@ -486,6 +490,31 @@ app.delete("/api/delete/:roomId/:fileId", (req, res) => {
 
   delete room.files[fileId];
   res.json({ success: true, message: "File was successfully deleted instantly." });
+});
+
+// API: Admin endpoint to get system state
+app.get("/api/admin/system_state", async (req, res) => {
+  const token = req.headers.authorization?.split("Bearer ")[1];
+  if (!token) {
+    return res.status(401).json({ error: "Unauthorized. Missing token." });
+  }
+
+  try {
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    if (decodedToken.email !== "smbadsha544@gmail.com") {
+      return res.status(403).json({ error: "Forbidden. Not an admin." });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        rooms, // memory db
+      }
+    });
+  } catch (error) {
+    console.error("Admin verify token error:", error);
+    res.status(401).json({ error: "Invalid token." });
+  }
 });
 
 // Start server and proxy static Vite assets
