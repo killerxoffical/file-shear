@@ -45,6 +45,7 @@ interface ChatMessage {
 interface Room {
   code: string;
   createdAt: number;
+  expiresAt: number;
   files: Record<string, FileMeta>;
   passcode?: string;
   devices?: Record<string, { id: string; name: string; lastSeen: number }>;
@@ -64,8 +65,8 @@ setInterval(() => {
   Object.keys(rooms).forEach((roomCode) => {
     const room = rooms[roomCode];
 
-    // If room is older than 1 hour (room limit), delete room and all its files instantly!
-    if (now - room.createdAt > 60 * 60 * 1000) {
+    // If room has expired, delete room and all its files instantly!
+    if (now > room.expiresAt) {
       console.log(`[Cleanup] Room expired: ${roomCode}. Purging all remaining files.`);
       Object.keys(room.files).forEach((fileId) => {
         const file = room.files[fileId];
@@ -133,6 +134,7 @@ app.get("/api/room/new", (req, res) => {
   rooms[code] = {
     code,
     createdAt: Date.now(),
+    expiresAt: Date.now() + EXPIRY_TIME_MS,
     files: {},
     passcode: passcode || undefined,
     devices: {},
@@ -155,12 +157,23 @@ app.post("/api/room/new", (req, res) => {
   rooms[code] = {
     code,
     createdAt: Date.now(),
+    expiresAt: Date.now() + EXPIRY_TIME_MS,
     files: {},
     passcode: passcode || undefined,
     devices: {},
   };
 
   res.json({ code, success: true });
+});
+
+app.post("/api/room/extend/:roomId", (req, res) => {
+  const { roomId } = req.params;
+  const room = rooms[roomId];
+  if (!room) return res.status(404).json({ error: "Room not found." });
+
+  // Extend by 1 hour
+  room.expiresAt += EXPIRY_TIME_MS;
+  res.json({ success: true, expiresAt: room.expiresAt });
 });
 
 // API: Verify if room exists and get its files
@@ -246,6 +259,7 @@ app.get("/api/room/:roomId", (req, res) => {
   res.json({
     code: room.code,
     createdAt: room.createdAt,
+    expiresAt: room.expiresAt,
     files: activeFiles,
     devices: activeDevices,
     hasPasscode: !!room.passcode,
@@ -354,7 +368,7 @@ app.post("/api/chat/:roomId", (req, res) => {
     return res.status(401).json({ error: "Incorrect room passcode." });
   }
 
-  const { senderId, senderName, type, content } = req.body;
+  const { senderId, senderName, type, content, transcription } = req.body;
   if (!content) {
     return res.status(400).json({ error: "Message content cannot be empty." });
   }
@@ -369,6 +383,7 @@ app.post("/api/chat/:roomId", (req, res) => {
     senderName: senderName || "Anonymous Node",
     type: type || "text",
     content,
+    transcription,
     createdAt: Date.now(),
   };
 
@@ -494,17 +509,12 @@ app.delete("/api/delete/:roomId/:fileId", (req, res) => {
 
 // API: Admin endpoint to get system state
 app.get("/api/admin/system_state", async (req, res) => {
-  const token = req.headers.authorization?.split("Bearer ")[1];
-  if (!token) {
-    return res.status(401).json({ error: "Unauthorized. Missing token." });
+  const adminEmail = req.headers["x-admin-email"];
+  if (adminEmail !== "smbadsha544@gmail.com") {
+    return res.status(403).json({ error: "Forbidden. Not an admin." });
   }
 
   try {
-    const decodedToken = await admin.auth().verifyIdToken(token);
-    if (decodedToken.email !== "smbadsha544@gmail.com") {
-      return res.status(403).json({ error: "Forbidden. Not an admin." });
-    }
-
     res.json({
       success: true,
       data: {
@@ -512,8 +522,8 @@ app.get("/api/admin/system_state", async (req, res) => {
       }
     });
   } catch (error) {
-    console.error("Admin verify token error:", error);
-    res.status(401).json({ error: "Invalid token." });
+    console.error("Admin error:", error);
+    res.status(500).json({ error: "Server error." });
   }
 });
 

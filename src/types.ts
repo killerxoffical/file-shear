@@ -17,12 +17,14 @@ export interface ChatMessage {
   senderName: string;
   type: "text" | "voice" | "image" | "file_request";
   content: string; // text, or base64 audio/image
+  transcription?: string; // voice transcription
   createdAt: number;
 }
 
 export interface RoomState {
   code: string;
   createdAt: number;
+  expiresAt?: number;
   files: Record<string, FileMeta>;
   hasPasscode?: boolean;
   devices?: { id: string; name: string; lastSeen: number }[];

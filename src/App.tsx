@@ -2,8 +2,9 @@ import React, { useState, useEffect, useRef, useMemo } from "react";
 import QRCode from "qrcode";
 import { motion, AnimatePresence } from "motion/react";
 import { Html5Qrcode } from "html5-qrcode";
-import { auth, loginWithGoogle, logout } from "./firebase";
+import { auth, loginWithGoogle, logout, db } from "./firebase";
 import { onAuthStateChanged, User } from "firebase/auth";
+import { doc, onSnapshot, setDoc, updateDoc } from "firebase/firestore";
 import { LandingPage } from "./LandingPage";
 import { AuthModal } from "./AuthModal";
 import { 
@@ -116,6 +117,7 @@ export default function App() {
 
   // App navigation state
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [credits, setCredits] = useState<number | null>(null);
   const [isAuthLoaded, setIsAuthLoaded] = useState<boolean>(false);
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [showAdminPanel, setShowAdminPanel] = useState<boolean>(false);
@@ -124,13 +126,33 @@ export default function App() {
   const [currentRoomCode, setCurrentRoomCode] = useState<string | null>(null);
   const [roomData, setRoomData] = useState<RoomState | null>(null);
 
-  // Auth listener
+  // Auth & Credit listener
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    let unsubscribeCredits: () => void;
+
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
       setCurrentUser(user);
       setIsAuthLoaded(true);
+
+      if (user) {
+        const userRef = doc(db, "users", user.uid);
+        unsubscribeCredits = onSnapshot(userRef, (docSnap) => {
+          if (docSnap.exists()) {
+            setCredits(docSnap.data().credits);
+          } else {
+            // New user, give 500 init credits
+            setDoc(userRef, { email: user.email, credits: 500, createdAt: Date.now() });
+          }
+        });
+      } else {
+        setCredits(null);
+      }
     });
-    return () => unsubscribe();
+
+    return () => {
+      unsubscribeAuth();
+      if (unsubscribeCredits) unsubscribeCredits();
+    };
   }, []);
   
   // Forms & Inputs
@@ -172,8 +194,11 @@ export default function App() {
   const [chatInputText, setChatInputText] = useState<string>("");
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [recordingDuration, setRecordingDuration] = useState<number>(0);
+  const [transcriptionText, setTranscriptionText] = useState<string>("");
   const recordingTimerRef = useRef<any>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const speechRecognitionRef = useRef<any>(null);
+  const transcriptionRef = useRef<string>("");
   const audioChunksRef = useRef<Blob[]>([]);
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const chatImageInputRef = useRef<HTMLInputElement>(null);
@@ -275,7 +300,7 @@ export default function App() {
   }, []);
 
   // Live Chat Delivery integration endpoint Caller
-  const sendChatMessage = async (type: "text" | "voice" | "image" | "file_request" = "text", customContent?: string) => {
+  const sendChatMessage = async (type: "text" | "voice" | "image" | "file_request" = "text", customContent?: string, extraData?: any) => {
     if (!currentRoomCode) return;
     
     const contentToSend = customContent !== undefined ? customContent : chatInputText;
@@ -293,6 +318,7 @@ export default function App() {
           senderName: deviceName || "Anonymous Node",
           type,
           content: contentToSend,
+          transcription: extraData?.transcription,
         }),
       });
 
@@ -323,6 +349,30 @@ export default function App() {
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
 
+      // Start Web Speech API Recognition
+      transcriptionRef.current = "";
+      setTranscriptionText("");
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = language === "bn" ? "bn-BD" : "en-US";
+        
+        recognition.onresult = (event: any) => {
+          let currentTranscript = "";
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+             currentTranscript += event.results[i][0].transcript;
+          }
+          transcriptionRef.current = currentTranscript;
+          setTranscriptionText(currentTranscript);
+        };
+        
+        recognition.onerror = (e: any) => console.log("Speech recognition error", e);
+        recognition.start();
+        speechRecognitionRef.current = recognition;
+      }
+
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
@@ -335,11 +385,16 @@ export default function App() {
         const reader = new FileReader();
         reader.onloadend = () => {
           const base64Audio = reader.result as string;
-          sendChatMessage("voice", base64Audio);
+          sendChatMessage("voice", base64Audio, { transcription: transcriptionRef.current });
         };
         reader.readAsDataURL(audioBlob);
 
         stream.getTracks().forEach((track) => track.stop());
+        
+        if (speechRecognitionRef.current) {
+          speechRecognitionRef.current.stop();
+          speechRecognitionRef.current = null;
+        }
       };
 
       mediaRecorder.start();
@@ -361,9 +416,13 @@ export default function App() {
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
+      setTranscriptionText("");
       if (recordingTimerRef.current) {
         clearInterval(recordingTimerRef.current);
         recordingTimerRef.current = null;
+      }
+      if (speechRecognitionRef.current) {
+        speechRecognitionRef.current.stop();
       }
     }
   };
@@ -613,7 +672,17 @@ export default function App() {
 
   // Create active sharing room with optional passcode
   const createRoom = async () => {
+    if (credits === null || credits < 100) {
+      showStatus("Not enough credits! Creating a room costs 100 credits.", "error");
+      return;
+    }
+
     try {
+      // Deduct 100 credits first using Firestore
+      if (currentUser) {
+        await updateDoc(doc(db, "users", currentUser.uid), { credits: credits - 100 });
+      }
+
       const passcodeParam = usePasscode ? createPasscode.trim() : "";
       const response = await fetch("/api/room/new", {
         method: "POST",
@@ -1341,18 +1410,22 @@ export default function App() {
                 {currentUser.email === "smbadsha544@gmail.com" && (
                   <button onClick={() => {
                     setShowAdminPanel(true);
-                    currentUser.getIdToken().then(token => {
-                      fetch('/api/admin/system_state', {
-                        headers: { 'Authorization': `Bearer ${token}` }
-                      }).then(res => res.json()).then(data => {
-                        setAdminData(data.data.rooms);
-                      });
+                    fetch('/api/admin/system_state', {
+                      headers: { 'x-admin-email': currentUser.email || "" }
+                    }).then(res => res.json()).then(data => {
+                      setAdminData(data.data.rooms);
                     });
                   }} className="text-[10px] font-bold px-2.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg cursor-pointer uppercase tracking-wider shadow-sm transition-colors">
                     Admin
                   </button>
                 )}
                 <div className={`hidden sm:flex items-center gap-2 px-2.5 py-1.5 rounded-lg border ${theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+                  {credits !== null && (
+                    <div className="flex items-center gap-1 pr-2 border-r border-slate-300 dark:border-slate-600">
+                      <span className="text-[10px] uppercase font-bold text-slate-500">Credits:</span>
+                      <span className="text-[10px] font-mono font-bold text-amber-500">{credits}</span>
+                    </div>
+                  )}
                   <span className="text-[10px] font-bold truncate max-w-[100px]">{currentUser.displayName || currentUser.email}</span>
                   <button onClick={logout} className="text-[10px] uppercase font-bold text-slate-500 hover:text-rose-500 cursor-pointer pl-2 border-l border-slate-300 dark:border-slate-600">Log Out</button>
                 </div>
@@ -1701,6 +1774,41 @@ export default function App() {
                         <Share2 className="h-4 w-4" />
                       </button>
                     </div>
+
+                    {roomData?.expiresAt && (
+                      <div className="mt-3 flex items-center justify-between w-full border-t border-blue-200/50 dark:border-blue-900/50 pt-2.5 gap-4">
+                        <div className="flex flex-col text-left">
+                          <span className={`text-[9px] font-bold uppercase tracking-wider ${theme === "dark" ? "text-blue-400/70" : "text-blue-600/70"}`}>Expires In</span>
+                          <span className={`text-xs font-mono font-bold ${roomData.expiresAt - Date.now() < 300000 ? "text-rose-500 animate-pulse" : (theme === "dark" ? "text-blue-300" : "text-blue-700")}`}>
+                            {formatTimeRemaining(roomData.expiresAt)}
+                          </span>
+                        </div>
+                        <button
+                          onClick={async () => {
+                            if (credits === null || credits < 75) {
+                              showStatus("Not enough credits! Extending room costs 75 credits.", "error");
+                              return;
+                            }
+                            try {
+                              if (currentUser) {
+                                await updateDoc(doc(db, "users", currentUser.uid), { credits: credits - 75 });
+                              }
+                              const res = await fetch(`/api/room/extend/${currentRoomCode}`, { method: "POST" });
+                              const json = await res.json();
+                              if (json.success && roomData) {
+                                setRoomData({ ...roomData, expiresAt: json.expiresAt });
+                                showStatus("Room extended by 1 hour (-75 credits)", "success");
+                              }
+                            } catch (err: any) {
+                              showStatus("Extended failed.", "error");
+                            }
+                          }}
+                          className={`text-[9px] font-bold px-2 py-1 uppercase tracking-wider rounded border shadow-sm transition-all cursor-pointer select-none ${theme === "dark" ? "bg-slate-800 border-slate-700 text-blue-400 hover:bg-slate-700" : "bg-slate-100 border-blue-200 text-blue-700 hover:bg-slate-200"}`}
+                        >
+                          Extend (+1H)
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   <div>
@@ -2274,6 +2382,11 @@ export default function App() {
                                       className="max-w-[195px] h-7 bg-slate-900 rounded-full scale-95 mt-1 focus:outline-none" 
                                       referrerPolicy="no-referrer"
                                     />
+                                    {msg.transcription && (
+                                      <div className={`mt-1.5 text-[10px] md:text-[11px] italic font-medium p-2 rounded-lg break-words ${isMe ? "bg-black/10 text-blue-100" : (theme === "dark" ? "bg-black/20 text-slate-300" : "bg-slate-200/50 text-slate-600")}`}>
+                                        "{msg.transcription}"
+                                      </div>
+                                    )}
                                   </div>
                                 )}
 
@@ -2319,26 +2432,33 @@ export default function App() {
 
                     {/* Recording Wave Indicator bar overlays */}
                     {isRecording && (
-                      <div className="absolute inset-x-0 bottom-[64px] bg-red-600 px-4 py-3 border-t border-red-500/30 flex items-center justify-between text-white animate-fade-in z-10 shadow-lg">
-                        <div className="flex items-center gap-3">
-                          <span className="relative flex h-3 w-3">
-                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75 animate-bounce"></span>
-                            <span className="relative inline-flex rounded-full h-3 w-3 bg-white"></span>
-                          </span>
-                          <span className="text-xs font-bold uppercase tracking-wider font-mono">
-                            {language === "bn" ? "ভয়েস রেকর্ড হচ্ছে..." : "Mic Stream Live"}
-                          </span>
-                          <span className="text-xs font-semibold font-mono bg-red-750 px-2 py-0.5 rounded border border-white/20">
-                            {recordingDuration}s
-                          </span>
+                      <div className="absolute inset-x-0 bottom-[64px] bg-red-600 px-4 py-3 border-t border-red-500/30 flex flex-col gap-2 text-white animate-fade-in z-10 shadow-lg">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <span className="relative flex h-3 w-3">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75 animate-bounce"></span>
+                              <span className="relative inline-flex rounded-full h-3 w-3 bg-white"></span>
+                            </span>
+                            <span className="text-xs font-bold uppercase tracking-wider font-mono">
+                              {language === "bn" ? "ভয়েস রেকর্ড হচ্ছে..." : "Mic Stream Live"}
+                            </span>
+                            <span className="text-xs font-semibold font-mono bg-red-750 px-2 py-0.5 rounded border border-white/20">
+                              {recordingDuration}s
+                            </span>
+                          </div>
+                          <button 
+                            onClick={stopVoiceRecording}
+                            className="bg-white text-red-650 hover:bg-neutral-100 font-bold p-2.5 rounded-full transition-all flex items-center justify-center cursor-pointer shadow-md"
+                            title="Stop and Send"
+                          >
+                            <Square className="h-4 w-4 fill-red-655 text-red-655" />
+                          </button>
                         </div>
-                        <button 
-                          onClick={stopVoiceRecording}
-                          className="bg-white text-red-650 hover:bg-neutral-100 font-bold p-2.5 rounded-full transition-all flex items-center justify-center cursor-pointer shadow-md"
-                          title="Stop and Send"
-                        >
-                          <Square className="h-4 w-4 fill-red-655 text-red-655" />
-                        </button>
+                        {transcriptionText && (
+                          <div className="text-[10px] italic opacity-90 px-1 line-clamp-2">
+                            "{transcriptionText}"
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -3091,12 +3211,10 @@ export default function App() {
               <button 
                 onClick={() => {
                   setAdminData(null);
-                  currentUser?.getIdToken().then(token => {
-                    fetch('/api/admin/system_state', {
-                      headers: { 'Authorization': `Bearer ${token}` }
-                    }).then(res => res.json()).then(data => {
-                      setAdminData(data.data.rooms);
-                    });
+                  fetch('/api/admin/system_state', {
+                    headers: { 'x-admin-email': currentUser?.email || "" }
+                  }).then(res => res.json()).then(data => {
+                    setAdminData(data.data.rooms);
                   });
                 }}
                 className="px-4 py-2 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 rounded-lg text-xs font-bold cursor-pointer transition-colors"
