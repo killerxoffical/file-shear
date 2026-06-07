@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
@@ -17,6 +17,18 @@ export const loginWithGoogle = async () => {
     console.error("Error signing in with Google:", error);
     throw error;
   }
+};
+
+export const registerWithEmail = async (email: string, pass: string) => {
+  return createUserWithEmailAndPassword(auth, email, pass);
+};
+
+export const loginWithEmail = async (email: string, pass: string) => {
+  return signInWithEmailAndPassword(auth, email, pass);
+};
+
+export const resetPassword = async (email: string) => {
+  return sendPasswordResetEmail(auth, email);
 };
 
 export const logout = async () => {

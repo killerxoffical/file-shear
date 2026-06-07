@@ -4,6 +4,8 @@ import { motion, AnimatePresence } from "motion/react";
 import { Html5Qrcode } from "html5-qrcode";
 import { auth, loginWithGoogle, logout } from "./firebase";
 import { onAuthStateChanged, User } from "firebase/auth";
+import { LandingPage } from "./LandingPage";
+import { AuthModal } from "./AuthModal";
 import { 
   FileUp, 
   Download, 
@@ -114,6 +116,8 @@ export default function App() {
 
   // App navigation state
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAuthLoaded, setIsAuthLoaded] = useState<boolean>(false);
+  const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [showAdminPanel, setShowAdminPanel] = useState<boolean>(false);
   const [adminData, setAdminData] = useState<any>(null);
 
@@ -124,6 +128,7 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setCurrentUser(user);
+      setIsAuthLoaded(true);
     });
     return () => unsubscribe();
   }, []);
@@ -1154,6 +1159,23 @@ export default function App() {
   const totalBytesUsed = fileList.reduce((acc, f) => acc + f.size, 0);
   const maxBytes = 10 * 1024 * 1024 * 1024; // 10GB
   const bufferPercentage = Math.min(100, (totalBytesUsed / maxBytes) * 100);
+
+  if (!isAuthLoaded) {
+    return (
+      <div className={`flex h-screen items-center justify-center ${theme === "dark" ? "bg-slate-950 text-white" : "bg-white text-slate-900"}`}>
+        <RefreshCw className="h-6 w-6 animate-spin text-blue-500" />
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <>
+        <LandingPage onGetStarted={() => setShowAuthModal(true)} theme={theme} />
+        {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} theme={theme} />}
+      </>
+    );
+  }
 
   return (
     <div className={`flex h-screen w-full font-sans overflow-hidden relative transition-colors duration-300 ${theme === "dark" ? "bg-slate-950 text-slate-100" : "bg-slate-50 text-slate-900"}`}>
