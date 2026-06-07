@@ -1,17 +1,12 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
-import { fileURLToPath } from "url";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
 
 const app = express();
 // Render automatically provides process.env.RENDER. For AI Studio we must strictly use 3000.
 const PORT = process.env.RENDER ? (process.env.PORT || 3000) : 3000;
-
-// Derive dynamic __dirname compatibility for ESM
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // Ensure upload directory exists
 const UPLOAD_DIR = path.join(process.cwd(), "uploads");
