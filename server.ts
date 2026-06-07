@@ -6,7 +6,8 @@ import multer from "multer";
 import { createServer as createViteServer } from "vite";
 
 const app = express();
-const PORT = 3000;
+// Render automatically provides process.env.RENDER. For AI Studio we must strictly use 3000.
+const PORT = process.env.RENDER ? (process.env.PORT || 3000) : 3000;
 
 // Derive dynamic __dirname compatibility for ESM
 const __filename = fileURLToPath(import.meta.url);
