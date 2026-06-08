@@ -10,12 +10,13 @@ const firebaseConfig = {
   projectId: "telecome-9c7e0",
   storageBucket: "telecome-9c7e0.firebasestorage.app",
   messagingSenderId: "334926468571",
-  appId: "1:334926468571:web:a36f2ab99d8fab850643fe"
+  appId: "1:334926468571:web:a36f2ab99d8fab850643fe",
+  firestoreDatabaseId: "ai-studio-6afebf77-c6c3-43fe-9a44-7a31d9140dd9"
 };
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId || "ai-studio-6afebf77-c6c3-43fe-9a44-7a31d9140dd9");
 export const auth = getAuth(app);
 
 export const googleProvider = new GoogleAuthProvider();

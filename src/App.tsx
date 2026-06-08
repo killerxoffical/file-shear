@@ -3357,6 +3357,21 @@ export default function App() {
                               +500
                             </button>
                           </div>
+                          <button
+                            onClick={async () => {
+                              const newAmount = 10000000;
+                              try {
+                                await updateDoc(doc(db, "users", user.id), { credits: newAmount });
+                                setAdminUsers(prev => prev.map(u => u.id === user.id ? { ...u, credits: newAmount } : u));
+                                showStatus("Added Unlimited credits", "success");
+                              } catch(e) {
+                                showStatus("Failed to add", "error");
+                              }
+                            }}
+                            className="px-2 py-1 text-[10px] font-bold cursor-pointer border border-amber-500/50 rounded transition-colors bg-amber-500 text-white hover:bg-amber-600 outline-none w-full shadow-sm"
+                          >
+                            Unlimited ♾️
+                          </button>
                         </div>
                       </div>
                     </div>
