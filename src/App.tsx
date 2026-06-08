@@ -229,6 +229,7 @@ export default function App() {
 
   // Live Coding & Collaborative Editor Workspace States
   const [activeTab, setActiveTab] = useState<"files" | "code">("files");
+  const [createRoomType, setCreateRoomType] = useState<"share" | "coding">("share");
   const [liveCode, setLiveCode] = useState<string>("");
   const [localCode, setLocalCode] = useState<string>("");
   const [liveLanguage, setLiveLanguage] = useState<string>("javascript");
@@ -799,15 +800,19 @@ export default function App() {
 
   // Create active sharing room with optional passcode
   const createRoom = async () => {
-    if (credits === null || credits < 100) {
-      showStatus("Not enough credits! Creating a room costs 100 credits.", "error");
+    const cost = createRoomType === "coding" ? 1500 : 100;
+    if (credits === null || credits < cost) {
+      const msg = language === "bn"
+        ? `পর্যাপ্ত কয়েন নেই! এই রুম তৈরি করতে ${cost} টি কয়েন লাগবে (আপনার আছে: ${credits || 0})।`
+        : `Not enough credits! Creating this room costs ${cost} credits (you have ${credits || 0}).`;
+      showStatus(msg, "error");
       return;
     }
 
     try {
-      // Deduct 100 credits first using Firestore
+      // Deduct credits first using Firestore
       if (currentUser) {
-        await updateDoc(doc(db, "users", currentUser.uid), { credits: credits - 100 });
+        await updateDoc(doc(db, "users", currentUser.uid), { credits: credits - cost });
       }
 
       const passcodeParam = usePasscode ? createPasscode.trim() : "";
@@ -820,7 +825,8 @@ export default function App() {
           passcode: passcodeParam,
           ownerId: currentUser?.uid,
           ownerEmail: currentUser?.email,
-          ownerName: currentUser?.displayName || currentUser?.email?.split('@')[0] || "Owner"
+          ownerName: currentUser?.displayName || currentUser?.email?.split('@')[0] || "Owner",
+          roomType: createRoomType
         }),
       });
       const data = await response.json();
@@ -828,8 +834,10 @@ export default function App() {
         // Create initial live coding document in Firestore
         try {
           await setDoc(doc(db, "liveCoding", data.code), {
-            code: `// Welcome to Live Collaborative Workspace\n// Start coding in real-time with your team here!\n\nfunction main() {\n  console.log("Hello, World!");\n}`,
-            language: "javascript",
+            code: createRoomType === "coding" 
+              ? `<!DOCTYPE html>\n<html>\n<head>\n  <meta charset="utf-8">\n  <title>Live Preview HTML</title>\n  <style>\n    body {\n      font-family: sans-serif;\n      background: #111;\n      color: #fff;\n      text-align: center;\n      padding-top: 50px;\n    }\n    h1 {\n      color: #3b82f6;\n    }\n    button {\n      background: #3b82f6;\n      color: white;\n      border: none;\n      padding: 10px 20px;\n      border-radius: 8px;\n      cursor: pointer;\n    }\n  </style>\n</head>\n<body>\n  <h1>Hello, HTML Live Code Sandbox!</h1>\n  <p>Start editing to see changes instant or click below</p>\n  <button onclick="alert('Working!')">Test Me</button>\n</body>\n</html>`
+              : `// Welcome to Live Collaborative Workspace\n// Start coding in real-time with your team here!\n\nfunction main() {\n  console.log("Hello, World!");\n}`,
+            language: createRoomType === "coding" ? "html" : "javascript",
             isLocked: false,
             ownerId: currentUser?.uid || "anonymous",
             ownerName: currentUser?.displayName || currentUser?.email?.split('@')[0] || "Owner",
@@ -848,11 +856,23 @@ export default function App() {
         } else {
           setCurrentPasscode("");
         }
+        
+        // Auto navigate to code tab for coding rooms
+        if (createRoomType === "coding") {
+          setActiveTab("code");
+        } else {
+          setActiveTab("files");
+        }
+
         setCurrentRoomCode(data.code);
         setRoomError(null);
         setCreatePasscode("");
         setUsePasscode(false);
-        showStatus("New share room created successfully!", "success");
+        
+        const successMsg = createRoomType === "coding"
+          ? (language === "bn" ? `রিয়েল-টাইম লাইভ কোডিং সুইট সফলভাবে তৈরি হয়েছে! (-${cost} কয়েন)` : `Ultimate Live Coding Suite created successfully! (-${cost} credits)`)
+          : (language === "bn" ? `নতুন শেয়ার রুম সফলভাবে তৈরি হয়েছে! (-${cost} কয়েন)` : `New share room created successfully! (-${cost} credits)`);
+        showStatus(successMsg, "success");
       }
     } catch (err) {
       console.error(err);
@@ -1797,23 +1817,71 @@ export default function App() {
               <div className="grid md:grid-cols-2 gap-6 mt-2">
                 
                 {/* Panel left: Start sharing room */}
-                <div className={`border rounded-2xl p-6 shadow-sm flex flex-col justify-between items-stretch gap-6 transition-all duration-300 ${theme === "dark" ? "bg-slate-900 border-slate-800 hover:border-slate-700 hover:shadow-lg shadow-black/35" : "bg-white border-slate-200 hover:border-slate-300 hover:shadow-md"}`}>
-                  <div className="flex flex-col gap-3.5">
+                <div className={`border rounded-2xl p-6 shadow-sm flex flex-col justify-between items-stretch gap-5 transition-all duration-300 ${theme === "dark" ? "bg-slate-900 border-slate-800 hover:border-slate-700 hover:shadow-lg shadow-black/35" : "bg-white border-slate-200 hover:border-slate-300 hover:shadow-md"}`}>
+                  <div className="flex flex-col gap-3">
                     <div className={`h-10 w-10 rounded-xl flex items-center justify-center font-bold ${theme === "dark" ? "bg-blue-950 text-blue-400" : "bg-blue-50 text-blue-600"}`}>
                       <Plus className="h-5.5 w-5.5 stroke-[2.5]" />
                     </div>
                     <h3 className={`text-lg font-extrabold transition-colors duration-300 ${theme === "dark" ? "text-white" : "text-slate-950"}`}>
-                      {language === "bn" ? "নতুন কানেক্ট কোড বানান" : "Start New Sharing Stream"}
+                      {language === "bn" ? "নতুন কানেক্ট কোড ও রুম বানান" : "Initialize Sharing Stream"}
                     </h3>
-                    <p className={`text-xs sm:text-sm leading-relaxed font-medium transition-colors duration-300 ${theme === "dark" ? "text-slate-400" : "text-slate-500"}`}>
+                    <p className={`text-xs sm:text-sm leading-relaxed font-medium transition-colors duration-300 ${theme === "dark" ? "text-slate-400" : "text-slate-505"}`}>
                       {language === "bn" 
-                        ? "একটি সম্পূর্ণ সিকিউর এবং ৪ সংখ্যার কোড বিশিষ্ট রুম খুলে সাথে সাথেই যেকোনো ফাইল ড্রপ বা আপলোড করুন।" 
-                        : "Open a temporary sharing workspace instantly with a 4-digit code. Easily access with mobile camera QR."}
+                        ? "একটি সিকিউর ৪ ডিজিট কোডের অ্যান্ড-টু-অ্যান্ড ইনক্রিপ্টেড রুম খুলুন। টাইপ বা ফাইল শেয়ারিং করুন রিয়ালে।" 
+                        : "Open a temporary sharing or live coding workspace instantly with a 4-digit code."}
                     </p>
                   </div>
 
+                  {/* Room Type Selector Segmented Options */}
+                  <div className={`p-4 rounded-xl border flex flex-col gap-3 ${theme === "dark" ? "bg-slate-950/40 border-slate-850" : "bg-slate-50/60 border-slate-150"}`}>
+                    <span className={`text-[10px] text-left font-black tracking-wider uppercase ${theme === "dark" ? "text-slate-400" : "text-slate-550"}`}>
+                      {language === "bn" ? "রুমের ধরণ ও খরচ সিলেক্ট করুন" : "Select Workspace Engine & Cost"}
+                    </span>
+                    <div className="grid grid-cols-2 gap-2.5">
+                      {/* Option 1: File Share */}
+                      <div 
+                        onClick={() => setCreateRoomType("share")}
+                        className={`p-3 rounded-xl border flex flex-col items-start gap-1.5 cursor-pointer transition-all ${
+                          createRoomType === "share"
+                            ? "border-blue-500 bg-blue-500/5 ring-1 ring-blue-500/30"
+                            : theme === "dark" ? "border-slate-800 bg-slate-950/40 hover:bg-slate-900 text-slate-400 hover:text-slate-200" : "border-slate-200 bg-slate-50/40 hover:bg-slate-100/60 text-slate-600 hover:text-slate-900"
+                        }`}
+                      >
+                        <div className={`p-1 w-fit rounded-lg ${createRoomType === "share" ? "bg-blue-600 text-white" : theme === "dark" ? "bg-slate-800 text-slate-400" : "bg-slate-200 text-slate-600"}`}>
+                          <HardDrive className="h-3.5 w-3.5" />
+                        </div>
+                        <div className="text-left">
+                          <span className="text-[11px] font-bold block leading-tight">
+                            {language === "bn" ? "ফাইল ব্রিজ" : "File Bridge"}
+                          </span>
+                          <span className="text-[9px] font-mono font-black text-blue-500 leading-none">100 Credits</span>
+                        </div>
+                      </div>
+
+                      {/* Option 2: Live Coding */}
+                      <div 
+                        onClick={() => setCreateRoomType("coding")}
+                        className={`p-3 rounded-xl border flex flex-col items-start gap-1.5 cursor-pointer transition-all ${
+                          createRoomType === "coding"
+                            ? "border-amber-500 bg-amber-500/5 ring-1 ring-amber-500/30"
+                            : theme === "dark" ? "border-slate-800 bg-slate-950/40 hover:bg-slate-900 text-slate-400 hover:text-slate-200" : "border-slate-200 bg-slate-50/40 hover:bg-slate-100/60 text-slate-600 hover:text-slate-900"
+                        }`}
+                      >
+                        <div className={`p-1 w-fit rounded-lg ${createRoomType === "coding" ? "bg-amber-500 text-white" : theme === "dark" ? "bg-slate-800 text-slate-400" : "bg-slate-200 text-slate-600"}`}>
+                          <Terminal className="h-3.5 w-3.5" />
+                        </div>
+                        <div className="text-left">
+                          <span className="text-[11px] font-bold block leading-tight">
+                            {language === "bn" ? "লাইভ কোডিং সুইট" : "Live Coding Suite"}
+                          </span>
+                          <span className="text-[9px] font-mono font-black text-amber-500 leading-none">1500 Credits</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
                   {/* Passcode toggler and configuration input */}
-                  <div className={`p-4 rounded-xl border transition-all ${theme === "dark" ? "bg-slate-950/40 border-slate-800" : "bg-slate-50 border-slate-150"}`}>
+                  <div className={`p-4 rounded-xl border transition-all ${theme === "dark" ? "bg-slate-950/40 border-slate-850" : "bg-slate-50 border-slate-150"}`}>
                     <label className="flex items-center gap-2.5 cursor-pointer select-none">
                       <input 
                         type="checkbox"
@@ -1826,7 +1894,7 @@ export default function App() {
                       />
                       <span className={`text-xs font-bold flex items-center gap-1.5 ${theme === "dark" ? "text-slate-300" : "text-slate-700"}`}>
                         <Lock className="h-3.5 w-3.5 text-blue-500" />
-                        Protect Room with Passcode
+                        {language === "bn" ? "রুম পাসকোড দিয়ে লক করুন" : "Protect Room with Passcode"}
                       </span>
                     </label>
 
@@ -1839,7 +1907,7 @@ export default function App() {
                           transition={{ duration: 0.2 }}
                           className="overflow-hidden space-y-1.5"
                         >
-                          <span className={`text-[11px] font-semibold block ${theme === "dark" ? "text-slate-400" : "text-slate-500"}`}>
+                          <span className={`text-[11px] text-left font-semibold block ${theme === "dark" ? "text-slate-400" : "text-slate-550"}`}>
                             Choose session password:
                           </span>
                           <div className="relative">
@@ -2566,6 +2634,7 @@ export default function App() {
                       liveParticipants={liveParticipants}
                       handleLocalCodeChange={handleLocalCodeChange}
                       showStatus={showStatus}
+                      roomData={roomData}
                     />
                   )}
 

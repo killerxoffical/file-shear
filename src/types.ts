@@ -34,4 +34,5 @@ export interface RoomState {
   ownerId?: string;
   ownerEmail?: string;
   ownerName?: string;
+  roomType?: "share" | "coding";
 }

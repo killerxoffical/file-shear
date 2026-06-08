@@ -54,6 +54,7 @@ interface Room {
   ownerId?: string;
   ownerEmail?: string;
   ownerName?: string;
+  roomType?: "share" | "coding";
 }
 
 const rooms: Record<string, Room> = {};
@@ -126,6 +127,7 @@ app.use(express.json());
 // API: Generate a new 4-digit unique room
 app.get("/api/room/new", (req, res) => {
   const passcode = req.query.passcode as string;
+  const roomType = (req.query.roomType as "share" | "coding") || "share";
   let code = "";
   let attempts = 0;
   
@@ -142,13 +144,14 @@ app.get("/api/room/new", (req, res) => {
     files: {},
     passcode: passcode || undefined,
     devices: {},
+    roomType,
   };
 
   res.json({ code, success: true });
 });
 
 app.post("/api/room/new", (req, res) => {
-  const { passcode, ownerId, ownerEmail, ownerName } = req.body || {};
+  const { passcode, ownerId, ownerEmail, ownerName, roomType } = req.body || {};
   let code = "";
   let attempts = 0;
   
@@ -168,6 +171,7 @@ app.post("/api/room/new", (req, res) => {
     ownerId,
     ownerEmail,
     ownerName,
+    roomType: roomType || "share",
   };
 
   res.json({ code, success: true });
@@ -276,6 +280,7 @@ app.get("/api/room/:roomId", (req, res) => {
     ownerId: room.ownerId,
     ownerEmail: room.ownerEmail,
     ownerName: room.ownerName,
+    roomType: room.roomType || "share",
   });
 });
 
