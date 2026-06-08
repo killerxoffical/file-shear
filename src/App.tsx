@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { Html5Qrcode } from "html5-qrcode";
 import { auth, loginWithGoogle, logout, db } from "./firebase";
 import { onAuthStateChanged, User } from "firebase/auth";
-import { doc, onSnapshot, setDoc, updateDoc, collection, getDocs } from "firebase/firestore";
+import { doc, onSnapshot, setDoc, updateDoc, collection, getDocs, getDoc } from "firebase/firestore";
 import { LandingPage } from "./LandingPage";
 import { AuthModal } from "./AuthModal";
 import { 
@@ -156,22 +156,39 @@ export default function App() {
       if (user) {
         const userRef = doc(db, "users", user.uid);
         
-        // Ensure user document exists on log in
-        setDoc(userRef, { 
-          email: user.email || "Unknown", 
-          lastLog: Date.now() 
-        }, { merge: true }).then(() => {
+        // One-time check / initialization to avoid write loops inside real-time listener
+        getDoc(userRef).then((snap) => {
+          if (snap.exists()) {
+            const data = snap.data();
+            if (data.credits === undefined) {
+              setDoc(userRef, { credits: 500, createdAt: Date.now() }, { merge: true });
+            } else {
+              // Just update log and email, preserving existing credits
+              updateDoc(userRef, {
+                email: user.email || "Unknown",
+                lastLog: Date.now()
+              }).catch(err => console.error("Error updating log state:", err));
+            }
+          } else {
+            // Document doesn't exist, create it with 500 credits
+            setDoc(userRef, {
+              email: user.email || "Unknown",
+              credits: 500,
+              createdAt: Date.now(),
+              lastLog: Date.now()
+            }).catch(err => console.error("Error creating user doc:", err));
+          }
+
+          // Real-time synchronization only for reading (NO writing here)
           unsubscribeCredits = onSnapshot(userRef, (docSnap) => {
             if (docSnap.exists()) {
-               const data = docSnap.data();
-               if (data.credits === undefined) {
-                 setDoc(userRef, { credits: 500, createdAt: Date.now() }, { merge: true });
-               } else {
-                 setCredits(data.credits);
-               }
+              const data = docSnap.data();
+              if (data.credits !== undefined) {
+                setCredits(data.credits);
+              }
             }
           });
-        }).catch(err => console.error("Error setting up user doc:", err));
+        }).catch(err => console.error("Error reading user doc:", err));
       } else {
         setCredits(null);
       }
