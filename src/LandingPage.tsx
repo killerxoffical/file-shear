@@ -34,13 +34,13 @@ export const LandingPage = ({ onGetStarted, theme }: { onGetStarted: () => void,
       <header className="px-6 py-5 max-w-7xl w-full mx-auto flex items-center justify-between z-10">
         <div className="flex items-center gap-3 group cursor-pointer">
           <div className="relative w-11 h-11 rounded-2xl bg-gradient-to-tr from-blue-700 via-blue-600 to-indigo-500 flex items-center justify-center font-black text-white shadow-xl shadow-blue-500/25 group-hover:scale-105 transition-transform duration-300">
-            <span className="text-lg italic tracking-wider font-extrabold">IS</span>
+            <span className="text-lg italic tracking-wider font-extrabold text-white">SZ</span>
             {/* Glowing spot */}
             <div className="absolute -inset-0.5 bg-gradient-to-r from-blue-600 to-indigo-500 rounded-2xl blur opacity-20 group-hover:opacity-40 transition duration-1000 group-hover:duration-200"></div>
           </div>
           <div className="flex flex-col text-left">
             <span className="font-extrabold tracking-tight text-base leading-none bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-500 dark:from-white dark:to-slate-300">
-              Instant Share
+              sz cloud Data bridge
             </span>
             <span className="text-[9px] font-mono font-black text-blue-500 tracking-widest mt-0.5 flex items-center gap-1">
               <Radio className="h-2 w-2 animate-pulse text-blue-500" /> SIGNAL ACTIVE
@@ -179,7 +179,7 @@ export const LandingPage = ({ onGetStarted, theme }: { onGetStarted: () => void,
       
       {/* Footer */}
       <footer className="py-8 max-w-7xl w-full mx-auto px-6 text-center text-xs font-mono font-bold tracking-wider opacity-40 z-10 border-t border-slate-200/10 dark:border-slate-800/20 flex flex-col sm:flex-row items-center justify-between gap-4">
-        <span>© {new Date().getFullYear()} INSTANT SHARE. ALL EPHEMERAL VAULTS SEALED SECURELY.</span>
+        <span>© {new Date().getFullYear()} SZ CLOUD DATA BRIDGE. ALL EPHEMERAL VAULTS SEALED SECURELY.</span>
         <span className="flex items-center gap-1.5"><Activity className="h-3 w-3 animate-pulse text-emerald-500" /> SECURE TUNNEL ONLINE</span>
       </footer>
     </div>

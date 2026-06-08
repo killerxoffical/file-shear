@@ -1557,7 +1557,7 @@ export default function App() {
     const url = `${window.location.origin}/?room=${currentRoomCode}${currentPasscode ? `&passcode=${currentPasscode}` : ""}`;
     const desc = currentPasscode ? ` (Passcode: ${currentPasscode})` : "";
     const shareData = {
-      title: "Instant File Share",
+      title: "sz cloud Data bridge",
       text: `Join my live secure sync room: ${currentRoomCode}${desc}`,
       url: url,
     };
@@ -1634,7 +1634,7 @@ export default function App() {
 
   // Text contents by language
   const text = {
-    title: { en: "Instant File Share", bn: "ইনস্ট্যান্ট ফাইল শেয়ার" },
+    title: { en: "sz cloud Data bridge", bn: "এসজে ক্লাউড ডেটা ব্রিজ" },
     tagline: { 
       en: "The fastest, single-use, high-privacy way to exchange files directly between your mobile and PC.", 
       bn: "মোবাইল এবং পিসির মধ্যে সরাসরি এবং অতি দ্রুত ফাইল আদান-প্রদান করার সবচেয়ে সহজ ও নিরাপদ মাধ্যম।" 
@@ -1778,10 +1778,10 @@ export default function App() {
               {/* App logo brand wrapper */}
               <div className="flex items-center gap-3 mb-10">
                 <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center font-bold text-xl italic text-white shadow-lg shadow-blue-500/20">
-                  IF
+                  SZ
                 </div>
                 <div>
-                  <span className="text-base font-bold tracking-tight block text-slate-50">Instant Share</span>
+                  <span className="text-base font-bold tracking-tight block text-slate-50">sz cloud Data bridge</span>
                   <span className="text-[10px] text-blue-400 font-mono tracking-widest font-semibold uppercase">BRIDGE LIVE</span>
                 </div>
               </div>
