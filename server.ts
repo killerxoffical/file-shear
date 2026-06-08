@@ -51,6 +51,9 @@ interface Room {
   passcode?: string;
   devices?: Record<string, { id: string; name: string; lastSeen: number }>;
   messages?: ChatMessage[];
+  ownerId?: string;
+  ownerEmail?: string;
+  ownerName?: string;
 }
 
 const rooms: Record<string, Room> = {};
@@ -145,7 +148,7 @@ app.get("/api/room/new", (req, res) => {
 });
 
 app.post("/api/room/new", (req, res) => {
-  const { passcode } = req.body || {};
+  const { passcode, ownerId, ownerEmail, ownerName } = req.body || {};
   let code = "";
   let attempts = 0;
   
@@ -162,6 +165,9 @@ app.post("/api/room/new", (req, res) => {
     files: {},
     passcode: passcode || undefined,
     devices: {},
+    ownerId,
+    ownerEmail,
+    ownerName,
   };
 
   res.json({ code, success: true });
@@ -267,6 +273,9 @@ app.get("/api/room/:roomId", (req, res) => {
     messages: room.messages || [],
     totalSizeUsed,
     storageLimitBytes: ROOM_STORAGE_LIMIT_BYTES,
+    ownerId: room.ownerId,
+    ownerEmail: room.ownerEmail,
+    ownerName: room.ownerName,
   });
 });
 

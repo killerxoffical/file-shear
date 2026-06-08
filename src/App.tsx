@@ -43,10 +43,14 @@ import {
   MessageSquare,
   Clock,
   FileSearch,
-  Upload
+  Upload,
+  Terminal,
+  Users,
+  Settings
 } from "lucide-react";
 import { FileMeta, RoomState } from "./types";
 import { formatBytes, getFileIcon, formatTimeRemaining, formatRelativeTime } from "./utils";
+import LiveCodingWorkspace from "./components/LiveCodingWorkspace";
 
 // Play standard high-quality subtle chime sound using browser Web Audio API
 const playNotificationSound = () => {
@@ -222,6 +226,118 @@ export default function App() {
     localStorage.setItem("chat_sender_id", newId);
     return newId;
   });
+
+  // Live Coding & Collaborative Editor Workspace States
+  const [activeTab, setActiveTab] = useState<"files" | "code">("files");
+  const [liveCode, setLiveCode] = useState<string>("");
+  const [localCode, setLocalCode] = useState<string>("");
+  const [liveLanguage, setLiveLanguage] = useState<string>("javascript");
+  const [liveIsLocked, setLiveIsLocked] = useState<boolean>(false);
+  const [liveOwnerId, setLiveOwnerId] = useState<string>("");
+  const [liveOwnerName, setLiveOwnerName] = useState<string>("");
+  const [liveOwnerEmail, setLiveOwnerEmail] = useState<string>("");
+  const [livePermissions, setLivePermissions] = useState<Record<string, { edit?: boolean; download?: boolean; email?: string; name?: string }>>({});
+  const [liveActiveEditors, setLiveActiveEditors] = useState<Record<string, { name: string; isEditing: boolean; updatedAt: number }>>({});
+  const [liveParticipants, setLiveParticipants] = useState<Record<string, { uid: string; email: string; name: string; deviceId: string; lastSeen: number }>>({});
+  const lastTypedRef = useRef<number>(0);
+
+  // Collaborative Room Listener
+  useEffect(() => {
+    if (!currentRoomCode) {
+      setLiveCode("");
+      setLocalCode("");
+      setLivePermissions({});
+      setLiveActiveEditors({});
+      setLiveParticipants({});
+      return;
+    }
+
+    const docRef = doc(db, "liveCoding", currentRoomCode);
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setLiveLanguage(data.language || "javascript");
+        setLiveIsLocked(!!data.isLocked);
+        setLiveOwnerId(data.ownerId || "");
+        setLiveOwnerName(data.ownerName || "");
+        setLiveOwnerEmail(data.ownerEmail || "");
+        setLivePermissions(data.permissions || {});
+        setLiveActiveEditors(data.activeEditors || {});
+        setLiveParticipants(data.participants || {});
+
+        const codeVal = data.code ?? "";
+        setLiveCode(codeVal);
+
+        // Crucial: Only update local edit box if someone else edited it and we are not recently typing,
+        // or if localCode is empty, to safeguard cursor position!
+        const now = Date.now();
+        const weAreTyping = now - lastTypedRef.current < 2500;
+        if (data.updatedByUid !== currentUser?.uid || !weAreTyping) {
+          setLocalCode(codeVal);
+        }
+      } else {
+        // Create initial live coding document if it doesn't exist
+        const initialObj = {
+          code: `// Welcome to Live Collaborative Workspace\n// Start coding in real-time with your team here!\n\nfunction main() {\n  console.log("Hello, World!");\n}`,
+          language: "javascript",
+          isLocked: false,
+          ownerId: currentUser?.uid || "anonymous",
+          ownerName: currentUser?.displayName || currentUser?.email?.split('@')[0] || "Owner",
+          ownerEmail: currentUser?.email || "owner@no-email.com",
+          permissions: {},
+          activeEditors: {},
+          participants: {},
+          updatedAt: Date.now()
+        };
+        setDoc(docRef, initialObj).catch((e) => console.error("Error creating initial liveCoding:", e));
+        setLiveLanguage("javascript");
+        setLiveIsLocked(false);
+        setLiveOwnerId(currentUser?.uid || "anonymous");
+        setLiveOwnerName(currentUser?.displayName || currentUser?.email?.split('@')[0] || "Owner");
+        setLiveOwnerEmail(currentUser?.email || "owner@no-email.com");
+        setLiveCode(initialObj.code);
+        setLocalCode(initialObj.code);
+      }
+    }, (error) => {
+      console.error("Error in liveCoding snapshot:", error);
+    });
+
+    return () => unsubscribe();
+  }, [currentRoomCode, currentUser]);
+
+  // Handle local participant presence registration inside Live Coding collection
+  useEffect(() => {
+    if (currentRoomCode && currentUser) {
+      const docRef = doc(db, "liveCoding", currentRoomCode);
+      const userKey = `participants.${currentUser.uid}`;
+      updateDoc(docRef, {
+        [userKey]: {
+          uid: currentUser.uid,
+          email: currentUser.email || "No Email",
+          name: currentUser.displayName || currentUser.email?.split("@")[0] || "User",
+          deviceId: deviceId,
+          lastSeen: Date.now()
+        }
+      }).catch(err => {});
+    }
+  }, [currentRoomCode, currentUser, activeTab]);
+
+  // 2s Idle Typing Timer to reset client-side edit flag
+  useEffect(() => {
+    if (!currentRoomCode || !currentUser) return;
+
+    const timer = setInterval(() => {
+      const weAreIdle = Date.now() - lastTypedRef.current > 3000;
+      if (weAreIdle && liveActiveEditors[currentUser.uid]?.isEditing) {
+        const docRef = doc(db, "liveCoding", currentRoomCode);
+        updateDoc(docRef, {
+          [`activeEditors.${currentUser.uid}.isEditing`]: false
+        }).catch(err => {});
+      }
+    }, 2000);
+
+    return () => clearInterval(timer);
+  }, [currentRoomCode, currentUser, liveActiveEditors]);
   
   // UI states
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string>("");
@@ -700,10 +816,32 @@ export default function App() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ passcode: passcodeParam }),
+        body: JSON.stringify({ 
+          passcode: passcodeParam,
+          ownerId: currentUser?.uid,
+          ownerEmail: currentUser?.email,
+          ownerName: currentUser?.displayName || currentUser?.email?.split('@')[0] || "Owner"
+        }),
       });
       const data = await response.json();
       if (data.success && data.code) {
+        // Create initial live coding document in Firestore
+        try {
+          await setDoc(doc(db, "liveCoding", data.code), {
+            code: `// Welcome to Live Collaborative Workspace\n// Start coding in real-time with your team here!\n\nfunction main() {\n  console.log("Hello, World!");\n}`,
+            language: "javascript",
+            isLocked: false,
+            ownerId: currentUser?.uid || "anonymous",
+            ownerName: currentUser?.displayName || currentUser?.email?.split('@')[0] || "Owner",
+            ownerEmail: currentUser?.email || "owner@no-email.com",
+            permissions: {},
+            activeEditors: {},
+            updatedAt: Date.now()
+          });
+        } catch (dbErr) {
+          console.error("Firestore init error: ", dbErr);
+        }
+
         if (usePasscode && passcodeParam) {
           setCurrentPasscode(passcodeParam);
           localStorage.setItem(`room_pass_${data.code}`, passcodeParam);
@@ -832,6 +970,21 @@ export default function App() {
   const handleDownloadAction = (file: FileMeta) => {
     if (!currentRoomCode) return;
 
+    // Check download permission
+    const isRoomOwner = currentUser?.uid === liveOwnerId;
+    const userPerm = livePermissions[currentUser?.uid || ""];
+    const canDownload = isRoomOwner || userPerm?.download !== false;
+
+    if (!canDownload) {
+      showStatus(
+        language === "bn"
+          ? "আপনার এই রুমের ফাইল ডাউনলোড করার পারমিশন নেই। ওনারের সাথে যোগাযোগ করুন।"
+          : "You do not have permission to download files in this room. Please contact the owner.",
+        "error"
+      );
+      return;
+    }
+
     if (file.hasPasscode) {
       setPendingDownloadFile(file);
       setInputFilePasscode("");
@@ -866,6 +1019,21 @@ export default function App() {
 
   const handleDownloadAll = async () => {
     if (!currentRoomCode || !roomData?.files) return;
+
+    // Check download permission
+    const isRoomOwner = currentUser?.uid === liveOwnerId;
+    const userPerm = livePermissions[currentUser?.uid || ""];
+    const canDownload = isRoomOwner || userPerm?.download !== false;
+
+    if (!canDownload) {
+      showStatus(
+        language === "bn"
+          ? "আপনার এই রুমের ফাইল ডাউনলোড করার পারমিশন নেই। ওনারের সাথে যোগাযোগ করুন।"
+          : "You do not have permission to download files in this room. Please contact the owner.",
+        "error"
+      );
+      return;
+    }
     const currentFiles = Object.values(roomData.files) as FileMeta[];
     if (currentFiles.length === 0) return;
 
@@ -988,6 +1156,29 @@ export default function App() {
     } else {
       setStagedPreviewUrl(null);
       setStagedTextContent(null);
+    }
+  };
+
+  const handleLocalCodeChange = async (val: string) => {
+    setLocalCode(val);
+    lastTypedRef.current = Date.now();
+
+    if (!currentRoomCode || !currentUser) return;
+
+    const docRef = doc(db, "liveCoding", currentRoomCode);
+    try {
+      await updateDoc(docRef, {
+        code: val,
+        updatedAt: Date.now(),
+        updatedByUid: currentUser.uid,
+        [`activeEditors.${currentUser.uid}`]: {
+          name: currentUser.displayName || currentUser.email?.split("@")[0] || "Collaborator",
+          isEditing: true,
+          updatedAt: Date.now()
+        }
+      });
+    } catch (e) {
+      console.error("Failed to write live code change to Firestore:", e);
     }
   };
 
@@ -1863,7 +2054,12 @@ export default function App() {
 
                   <div>
                     <h3 className={`text-sm font-extrabold flex items-center gap-1.5 uppercase tracking-wide text-left ${theme === "dark" ? "text-white" : "text-slate-900"}`}>
-                      <span>{language === "bn" ? "কানেক্টেড লাইভ বোর্ড" : "Connected Share Board"}</span>
+                      <span>
+                        {roomData?.ownerName || roomData?.ownerEmail || liveOwnerName || liveOwnerEmail
+                          ? `${roomData?.ownerName || liveOwnerName || roomData?.ownerEmail?.split('@')[0] || liveOwnerEmail?.split('@')[0]}'s Sync Space` 
+                          : (language === "bn" ? "কানেক্টেড লাইভ বোর্ড" : "Connected Share Board")
+                        }
+                      </span>
                       <span className="inline-block h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
                     </h3>
                     <p className={`text-xs mt-0.5 text-left max-w-sm sm:max-w-md ${theme === "dark" ? "text-slate-400" : "text-slate-505"}`}>
@@ -1940,7 +2136,38 @@ export default function App() {
                 {/* 1. Left Section: File Operations and Quotas (7 / 12 width) */}
                 <div className="xl:col-span-7 flex flex-col gap-6">
 
-                  {/* High Resolution Storage Quota Progress Card */}
+                  {/* Tab Navigation Swapper */}
+                  <div className={`flex gap-2 p-1.5 rounded-2xl border transition-colors ${theme === "dark" ? "bg-slate-900 border-slate-800" : "bg-white border-slate-205"}`} id="live-coding-tab-swapper">
+                    <button
+                      onClick={() => setActiveTab("files")}
+                      className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold uppercase tracking-wider cursor-pointer transition-all ${
+                        activeTab === "files"
+                          ? "bg-blue-600 text-white shadow-md shadow-blue-500/10"
+                          : theme === "dark" ? "text-slate-400 hover:bg-slate-850" : "text-slate-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      <HardDrive className="h-4 w-4" />
+                      <span>{language === "bn" ? "ফাইল ও স্টোরেজ" : "Files & Storage"}</span>
+                    </button>
+                    <button
+                      onClick={() => setActiveTab("code")}
+                      className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold uppercase tracking-wider cursor-pointer transition-all relative ${
+                        activeTab === "code"
+                          ? "bg-blue-600 text-white shadow-md shadow-blue-500/10"
+                          : theme === "dark" ? "text-slate-400 hover:bg-slate-850" : "text-slate-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      <Terminal className="h-4 w-4" />
+                      <span>{language === "bn" ? "লাইভ কোডিং" : "Live Coding"}</span>
+                      {Object.values(liveActiveEditors).some((e: any) => e?.isEditing) && (
+                        <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-emerald-500 animate-ping" />
+                      )}
+                    </button>
+                  </div>
+
+                  {activeTab === "files" ? (
+                    <>
+                      {/* High Resolution Storage Quota Progress Card */}
                   <div className={`p-5 rounded-2xl border transition-all duration-300 relative overflow-hidden flex flex-col gap-3 shadow-xs ${
                     theme === "dark" 
                       ? "bg-slate-900 border-slate-800 text-white" 
@@ -2319,6 +2546,28 @@ export default function App() {
                     )}
 
                   </div>
+
+                    </>
+                  ) : (
+                    <LiveCodingWorkspace
+                      currentRoomCode={currentRoomCode}
+                      currentUser={currentUser}
+                      theme={theme}
+                      language={language}
+                      liveCode={liveCode}
+                      localCode={localCode}
+                      liveLanguage={liveLanguage}
+                      liveIsLocked={liveIsLocked}
+                      liveOwnerId={liveOwnerId}
+                      liveOwnerName={liveOwnerName}
+                      liveOwnerEmail={liveOwnerEmail}
+                      livePermissions={livePermissions}
+                      liveActiveEditors={liveActiveEditors}
+                      liveParticipants={liveParticipants}
+                      handleLocalCodeChange={handleLocalCodeChange}
+                      showStatus={showStatus}
+                    />
+                  )}
 
                 </div>
 

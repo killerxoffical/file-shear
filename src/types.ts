@@ -31,4 +31,7 @@ export interface RoomState {
   messages?: ChatMessage[];
   totalSizeUsed?: number;
   storageLimitBytes?: number;
+  ownerId?: string;
+  ownerEmail?: string;
+  ownerName?: string;
 }
