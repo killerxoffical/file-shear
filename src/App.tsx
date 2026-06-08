@@ -119,6 +119,19 @@ export default function App() {
     return `${os} (${browser})`;
   }, []);
 
+  const guestNickname = useMemo(() => {
+    let saved = localStorage.getItem("share_guest_nickname");
+    if (!saved) {
+      const adjectives = ["Ruby", "Sapphire", "Emerald", "Amber", "Slate", "Cobalt", "Topaz", "Jade"];
+      const nouns = ["Coder", "Developer", "Creator", "Hacker", "Designer", "Innovator", "Architect"];
+      const randAdj = adjectives[Math.floor(Math.random() * adjectives.length)];
+      const randNoun = nouns[Math.floor(Math.random() * nouns.length)];
+      saved = `${randAdj} ${randNoun}`;
+      localStorage.setItem("share_guest_nickname", saved);
+    }
+    return saved;
+  }, []);
+
   // App navigation state
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [credits, setCredits] = useState<number | null>(null);
@@ -273,7 +286,8 @@ export default function App() {
         // or if localCode is empty, to safeguard cursor position!
         const now = Date.now();
         const weAreTyping = now - lastTypedRef.current < 2500;
-        if (data.updatedByUid !== currentUser?.uid || !weAreTyping) {
+        const myUserId = currentUser?.uid || deviceId;
+        if (data.updatedByUid !== myUserId || !weAreTyping) {
           setLocalCode(codeVal);
         }
       } else {
@@ -282,9 +296,9 @@ export default function App() {
           code: `// Welcome to Live Collaborative Workspace\n// Start coding in real-time with your team here!\n\nfunction main() {\n  console.log("Hello, World!");\n}`,
           language: "javascript",
           isLocked: false,
-          ownerId: currentUser?.uid || "anonymous",
-          ownerName: currentUser?.displayName || currentUser?.email?.split('@')[0] || "Owner",
-          ownerEmail: currentUser?.email || "owner@no-email.com",
+          ownerId: currentUser?.uid || deviceId || "anonymous",
+          ownerName: currentUser?.displayName || currentUser?.email?.split('@')[0] || guestNickname,
+          ownerEmail: currentUser?.email || "guest@no-email.com",
           permissions: {},
           activeEditors: {},
           participants: {},
@@ -293,9 +307,9 @@ export default function App() {
         setDoc(docRef, initialObj).catch((e) => console.error("Error creating initial liveCoding:", e));
         setLiveLanguage("javascript");
         setLiveIsLocked(false);
-        setLiveOwnerId(currentUser?.uid || "anonymous");
-        setLiveOwnerName(currentUser?.displayName || currentUser?.email?.split('@')[0] || "Owner");
-        setLiveOwnerEmail(currentUser?.email || "owner@no-email.com");
+        setLiveOwnerId(currentUser?.uid || deviceId || "anonymous");
+        setLiveOwnerName(currentUser?.displayName || currentUser?.email?.split('@')[0] || guestNickname);
+        setLiveOwnerEmail(currentUser?.email || "guest@no-email.com");
         setLiveCode(initialObj.code);
         setLocalCode(initialObj.code);
       }
@@ -304,41 +318,45 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [currentRoomCode, currentUser]);
+  }, [currentRoomCode, currentUser, deviceId, guestNickname]);
 
   // Handle local participant presence registration inside Live Coding collection
   useEffect(() => {
-    if (currentRoomCode && currentUser) {
+    if (currentRoomCode) {
+      const myUserId = currentUser?.uid || deviceId;
+      const myUserName = currentUser?.displayName || currentUser?.email?.split("@")[0] || guestNickname;
+      const myUserEmail = currentUser?.email || `Guest (${guestNickname})`;
       const docRef = doc(db, "liveCoding", currentRoomCode);
-      const userKey = `participants.${currentUser.uid}`;
+      const userKey = `participants.${myUserId}`;
       updateDoc(docRef, {
         [userKey]: {
-          uid: currentUser.uid,
-          email: currentUser.email || "No Email",
-          name: currentUser.displayName || currentUser.email?.split("@")[0] || "User",
+          uid: myUserId,
+          email: myUserEmail,
+          name: myUserName,
           deviceId: deviceId,
           lastSeen: Date.now()
         }
       }).catch(err => {});
     }
-  }, [currentRoomCode, currentUser, activeTab]);
+  }, [currentRoomCode, currentUser, activeTab, deviceId, guestNickname]);
 
   // 2s Idle Typing Timer to reset client-side edit flag
   useEffect(() => {
-    if (!currentRoomCode || !currentUser) return;
+    if (!currentRoomCode) return;
+    const myUserId = currentUser?.uid || deviceId;
 
     const timer = setInterval(() => {
       const weAreIdle = Date.now() - lastTypedRef.current > 3000;
-      if (weAreIdle && liveActiveEditors[currentUser.uid]?.isEditing) {
+      if (weAreIdle && liveActiveEditors[myUserId]?.isEditing) {
         const docRef = doc(db, "liveCoding", currentRoomCode);
         updateDoc(docRef, {
-          [`activeEditors.${currentUser.uid}.isEditing`]: false
+          [`activeEditors.${myUserId}.isEditing`]: false
         }).catch(err => {});
       }
     }, 2000);
 
     return () => clearInterval(timer);
-  }, [currentRoomCode, currentUser, liveActiveEditors]);
+  }, [currentRoomCode, currentUser, liveActiveEditors, deviceId]);
   
   // UI states
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string>("");
@@ -1183,16 +1201,18 @@ export default function App() {
     setLocalCode(val);
     lastTypedRef.current = Date.now();
 
-    if (!currentRoomCode || !currentUser) return;
+    if (!currentRoomCode) return;
 
+    const myUserId = currentUser?.uid || deviceId;
+    const myUserName = currentUser?.displayName || currentUser?.email?.split("@")[0] || guestNickname;
     const docRef = doc(db, "liveCoding", currentRoomCode);
     try {
       await updateDoc(docRef, {
         code: val,
         updatedAt: Date.now(),
-        updatedByUid: currentUser.uid,
-        [`activeEditors.${currentUser.uid}`]: {
-          name: currentUser.displayName || currentUser.email?.split("@")[0] || "Collaborator",
+        updatedByUid: myUserId,
+        [`activeEditors.${myUserId}`]: {
+          name: myUserName,
           isEditing: true,
           updatedAt: Date.now()
         }
@@ -2635,6 +2655,8 @@ export default function App() {
                       handleLocalCodeChange={handleLocalCodeChange}
                       showStatus={showStatus}
                       roomData={roomData}
+                      deviceId={deviceId}
+                      guestNickname={guestNickname}
                     />
                   )}
 

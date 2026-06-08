@@ -48,6 +48,8 @@ interface LiveCodingWorkspaceProps {
   handleLocalCodeChange: (val: string) => void;
   showStatus: (text: string, type: "success" | "error" | "info") => void;
   roomData: RoomState | null;
+  deviceId: string;
+  guestNickname: string;
 }
 
 export default function LiveCodingWorkspace({
@@ -67,21 +69,24 @@ export default function LiveCodingWorkspace({
   liveParticipants,
   handleLocalCodeChange,
   showStatus,
-  roomData
+  roomData,
+  deviceId,
+  guestNickname
 }: LiveCodingWorkspaceProps) {
   const [copied, setCopied] = useState(false);
   const [showHtmlPreview, setShowHtmlPreview] = useState(true);
   const [isImportDropdownOpen, setIsImportDropdownOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const isOwner = currentUser?.uid === liveOwnerId;
-  const myPermission = livePermissions[currentUser?.uid || ""];
+  const myUserId = currentUser?.uid || deviceId;
+  const isOwner = myUserId === liveOwnerId;
+  const myPermission = livePermissions[myUserId];
   
   // Can current user edit? (Owner can always edit. Guest can edit if not locked AND they aren't explicitly restricted)
   const canEdit = isOwner || (!liveIsLocked && myPermission?.edit !== false);
 
   // Local state for voice status (synchronized with Firestore presence)
-  const meAsParticipant = liveParticipants[currentUser?.uid || ""];
+  const meAsParticipant = liveParticipants[myUserId];
   const isInVoiceCall = !!meAsParticipant?.isInVoiceCall;
   const isMuted = meAsParticipant?.isMuted !== false; // default to muted for safety
 
@@ -97,14 +102,14 @@ export default function LiveCodingWorkspace({
 
   // Simulated active speech interval when unmuted and in a call
   useEffect(() => {
-    if (!isInVoiceCall || isMuted || !currentRoomCode || !currentUser) return;
+    if (!isInVoiceCall || isMuted || !currentRoomCode) return;
 
     const speechSimulation = setInterval(() => {
       // 55% chance they speak during each interval to simulate a live speaking waveform
       const isSpeakingNow = Math.random() > 0.45;
       const docRef = doc(db, "liveCoding", currentRoomCode);
       updateDoc(docRef, {
-        [`participants.${currentUser.uid}.isTalking`]: isSpeakingNow
+        [`participants.${myUserId}.isTalking`]: isSpeakingNow
       }).catch(() => {});
     }, 1500);
 
@@ -113,22 +118,22 @@ export default function LiveCodingWorkspace({
       // Clean up speaking status when leaving call or muting
       const docRef = doc(db, "liveCoding", currentRoomCode);
       updateDoc(docRef, {
-        [`participants.${currentUser.uid}.isTalking`]: false
+        [`participants.${myUserId}.isTalking`]: false
       }).catch(() => {});
     };
-  }, [isInVoiceCall, isMuted, currentRoomCode, currentUser]);
+  }, [isInVoiceCall, isMuted, currentRoomCode, myUserId]);
 
   // Handle voice actions: Join / Leave Call
   const toggleVoiceCallRole = async () => {
-    if (!currentRoomCode || !currentUser) return;
+    if (!currentRoomCode) return;
     const docRef = doc(db, "liveCoding", currentRoomCode);
     const nextCallState = !isInVoiceCall;
     
     try {
       await updateDoc(docRef, {
-        [`participants.${currentUser.uid}.isInVoiceCall`]: nextCallState,
-        [`participants.${currentUser.uid}.isMuted`]: nextCallState ? true : false, // Join muted by default
-        [`participants.${currentUser.uid}.isTalking`]: false
+        [`participants.${myUserId}.isInVoiceCall`]: nextCallState,
+        [`participants.${myUserId}.isMuted`]: nextCallState ? true : false, // Join muted by default
+        [`participants.${myUserId}.isTalking`]: false
       });
       
       const msg = nextCallState 
@@ -142,14 +147,14 @@ export default function LiveCodingWorkspace({
 
   // Mute / Unmute toggler
   const toggleCallMute = async () => {
-    if (!currentRoomCode || !currentUser || !isInVoiceCall) return;
+    if (!currentRoomCode || !isInVoiceCall) return;
     const docRef = doc(db, "liveCoding", currentRoomCode);
     const nextMuteState = !isMuted;
     
     try {
       await updateDoc(docRef, {
-        [`participants.${currentUser.uid}.isMuted`]: nextMuteState,
-        [`participants.${currentUser.uid}.isTalking`]: nextMuteState ? false : true
+        [`participants.${myUserId}.isMuted`]: nextMuteState,
+        [`participants.${myUserId}.isTalking`]: nextMuteState ? false : true
       });
       
       const msg = nextMuteState 
@@ -371,7 +376,7 @@ export default function LiveCodingWorkspace({
 
   // Get active editors currently typing (excluding current user)
   const activeTypingUsers = Object.entries(liveActiveEditors)
-    .filter(([uid, meta]) => uid !== currentUser?.uid && meta.isEditing && (Date.now() - meta.updatedAt < 5000))
+    .filter(([uid, meta]) => uid !== myUserId && meta.isEditing && (Date.now() - meta.updatedAt < 5000))
     .map(([_, meta]) => meta.name);
 
   // Filter out actual participants to show in the permissions list (excluding the owner themselves)
