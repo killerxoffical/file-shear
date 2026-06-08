@@ -50,7 +50,6 @@ import {
 } from "lucide-react";
 import { FileMeta, RoomState } from "./types";
 import { formatBytes, getFileIcon, formatTimeRemaining, formatRelativeTime } from "./utils";
-import LiveCodingWorkspace from "./components/LiveCodingWorkspace";
 
 // Play standard high-quality subtle chime sound using browser Web Audio API
 const playNotificationSound = () => {
@@ -258,8 +257,8 @@ export default function App() {
   });
 
   // Live Coding & Collaborative Editor Workspace States
-  const [activeTab, setActiveTab] = useState<"files" | "code">("files");
-  const [createRoomType, setCreateRoomType] = useState<"share" | "coding">("share");
+  const [activeTab, setActiveTab] = useState<"files">("files");
+  const [createRoomType] = useState<"share">("share");
   const [liveCode, setLiveCode] = useState<string>("");
   const [localCode, setLocalCode] = useState<string>("");
   const [liveLanguage, setLiveLanguage] = useState<string>("javascript");
@@ -835,7 +834,7 @@ export default function App() {
 
   // Create active sharing room with optional passcode
   const createRoom = async () => {
-    const cost = createRoomType === "coding" ? 1500 : 100;
+    const cost = 100;
     if (credits === null || credits < cost) {
       const msg = language === "bn"
         ? `পর্যাপ্ত কয়েন নেই! এই রুম তৈরি করতে ${cost} টি কয়েন লাগবে (আপনার আছে: ${credits || 0})।`
@@ -861,30 +860,11 @@ export default function App() {
           ownerId: currentUser?.uid,
           ownerEmail: currentUser?.email,
           ownerName: currentUser?.displayName || currentUser?.email?.split('@')[0] || "Owner",
-          roomType: createRoomType
+          roomType: "share"
         }),
       });
       const data = await response.json();
       if (data.success && data.code) {
-        // Create initial live coding document in Firestore
-        try {
-          await setDoc(doc(db, "liveCoding", data.code), {
-            code: createRoomType === "coding" 
-              ? `<!DOCTYPE html>\n<html>\n<head>\n  <meta charset="utf-8">\n  <title>Live Preview HTML</title>\n  <style>\n    body {\n      font-family: sans-serif;\n      background: #111;\n      color: #fff;\n      text-align: center;\n      padding-top: 50px;\n    }\n    h1 {\n      color: #3b82f6;\n    }\n    button {\n      background: #3b82f6;\n      color: white;\n      border: none;\n      padding: 10px 20px;\n      border-radius: 8px;\n      cursor: pointer;\n    }\n  </style>\n</head>\n<body>\n  <h1>Hello, HTML Live Code Sandbox!</h1>\n  <p>Start editing to see changes instant or click below</p>\n  <button onclick="alert('Working!')">Test Me</button>\n</body>\n</html>`
-              : `// Welcome to Live Collaborative Workspace\n// Start coding in real-time with your team here!\n\nfunction main() {\n  console.log("Hello, World!");\n}`,
-            language: createRoomType === "coding" ? "html" : "javascript",
-            isLocked: false,
-            ownerId: currentUser?.uid || "anonymous",
-            ownerName: currentUser?.displayName || currentUser?.email?.split('@')[0] || "Owner",
-            ownerEmail: currentUser?.email || "owner@no-email.com",
-            permissions: {},
-            activeEditors: {},
-            updatedAt: Date.now()
-          });
-        } catch (dbErr) {
-          console.error("Firestore init error: ", dbErr);
-        }
-
         if (usePasscode && passcodeParam) {
           setCurrentPasscode(passcodeParam);
           localStorage.setItem(`room_pass_${data.code}`, passcodeParam);
@@ -892,21 +872,14 @@ export default function App() {
           setCurrentPasscode("");
         }
         
-        // Auto navigate to code tab for coding rooms
-        if (createRoomType === "coding") {
-          setActiveTab("code");
-        } else {
-          setActiveTab("files");
-        }
+        setActiveTab("files");
 
         setCurrentRoomCode(data.code);
         setRoomError(null);
         setCreatePasscode("");
         setUsePasscode(false);
         
-        const successMsg = createRoomType === "coding"
-          ? (language === "bn" ? `রিয়েল-টাইম লাইভ কোডিং সুইট সফলভাবে তৈরি হয়েছে! (-${cost} কয়েন)` : `Ultimate Live Coding Suite created successfully! (-${cost} credits)`)
-          : (language === "bn" ? `নতুন শেয়ার রুম সফলভাবে তৈরি হয়েছে! (-${cost} কয়েন)` : `New share room created successfully! (-${cost} credits)`);
+        const successMsg = language === "bn" ? `নতুন শেয়ার রুম সফলভাবে তৈরি হয়েছে! (-${cost} কয়েন)` : `New share room created successfully! (-${cost} credits)`;
         showStatus(successMsg, "success");
       }
     } catch (err) {
@@ -1869,51 +1842,23 @@ export default function App() {
                     </p>
                   </div>
 
-                  {/* Room Type Selector Segmented Options */}
-                  <div className={`p-4 rounded-xl border flex flex-col gap-3 ${theme === "dark" ? "bg-slate-950/40 border-slate-850" : "bg-slate-50/60 border-slate-150"}`}>
-                    <span className={`text-[10px] text-left font-black tracking-wider uppercase ${theme === "dark" ? "text-slate-400" : "text-slate-550"}`}>
-                      {language === "bn" ? "রুমের ধরণ ও খরচ সিলেক্ট করুন" : "Select Workspace Engine & Cost"}
-                    </span>
-                    <div className="grid grid-cols-2 gap-2.5">
-                      {/* Option 1: File Share */}
-                      <div 
-                        onClick={() => setCreateRoomType("share")}
-                        className={`p-3 rounded-xl border flex flex-col items-start gap-1.5 cursor-pointer transition-all ${
-                          createRoomType === "share"
-                            ? "border-blue-500 bg-blue-500/5 ring-1 ring-blue-500/30"
-                            : theme === "dark" ? "border-slate-800 bg-slate-950/40 hover:bg-slate-900 text-slate-400 hover:text-slate-200" : "border-slate-200 bg-slate-50/40 hover:bg-slate-100/60 text-slate-600 hover:text-slate-900"
-                        }`}
-                      >
-                        <div className={`p-1 w-fit rounded-lg ${createRoomType === "share" ? "bg-blue-600 text-white" : theme === "dark" ? "bg-slate-800 text-slate-400" : "bg-slate-200 text-slate-600"}`}>
-                          <HardDrive className="h-3.5 w-3.5" />
-                        </div>
-                        <div className="text-left">
-                          <span className="text-[11px] font-bold block leading-tight">
-                            {language === "bn" ? "ফাইল ব্রিজ" : "File Bridge"}
-                          </span>
-                          <span className="text-[9px] font-mono font-black text-blue-500 leading-none">100 Credits</span>
-                        </div>
+                  {/* Secure Room cost informational box */}
+                  <div className={`p-4 rounded-xl border flex items-center justify-between gap-3 ${theme === "dark" ? "bg-slate-950/40 border-slate-850" : "bg-slate-50/60 border-slate-150"}`}>
+                    <div className="flex items-center gap-2.5 text-left">
+                      <div className={`p-2 rounded-xl ${theme === "dark" ? "bg-blue-950 text-blue-400" : "bg-blue-50 text-blue-600"}`}>
+                        <HardDrive className="h-4 w-4" />
                       </div>
-
-                      {/* Option 2: Live Coding */}
-                      <div 
-                        onClick={() => setCreateRoomType("coding")}
-                        className={`p-3 rounded-xl border flex flex-col items-start gap-1.5 cursor-pointer transition-all ${
-                          createRoomType === "coding"
-                            ? "border-amber-500 bg-amber-500/5 ring-1 ring-amber-500/30"
-                            : theme === "dark" ? "border-slate-800 bg-slate-950/40 hover:bg-slate-900 text-slate-400 hover:text-slate-200" : "border-slate-200 bg-slate-50/40 hover:bg-slate-100/60 text-slate-600 hover:text-slate-900"
-                        }`}
-                      >
-                        <div className={`p-1 w-fit rounded-lg ${createRoomType === "coding" ? "bg-amber-500 text-white" : theme === "dark" ? "bg-slate-800 text-slate-400" : "bg-slate-200 text-slate-600"}`}>
-                          <Terminal className="h-3.5 w-3.5" />
-                        </div>
-                        <div className="text-left">
-                          <span className="text-[11px] font-bold block leading-tight">
-                            {language === "bn" ? "লাইভ কোডিং সুইট" : "Live Coding Suite"}
-                          </span>
-                          <span className="text-[9px] font-mono font-black text-amber-500 leading-none">1500 Credits</span>
-                        </div>
+                      <div>
+                        <span className="text-[12px] font-bold block leading-tight text-left">
+                          {language === "bn" ? "ফাইল শেয়ারিং ব্রিজ" : "File Sharing Bridge"}
+                        </span>
+                        <span className={`text-[10px] font-medium block mt-0.5 ${theme === "dark" ? "text-slate-400" : "text-slate-500"}`}>
+                          {language === "bn" ? "রুম তৈরির এককালীন খরচ" : "One-time room generation fee"}
+                        </span>
                       </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <span className="text-xs font-mono font-black text-blue-500 px-2.5 py-1 rounded bg-blue-500/10 border border-blue-500/20">100 Credits</span>
                     </div>
                   </div>
 
@@ -2241,37 +2186,8 @@ export default function App() {
                 {/* 1. Left Section: File Operations and Quotas (7 / 12 width) */}
                 <div className="xl:col-span-7 flex flex-col gap-6">
 
-                  {/* Tab Navigation Swapper */}
-                  <div className={`flex gap-2 p-1.5 rounded-2xl border transition-colors ${theme === "dark" ? "bg-slate-900 border-slate-800" : "bg-white border-slate-205"}`} id="live-coding-tab-swapper">
-                    <button
-                      onClick={() => setActiveTab("files")}
-                      className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold uppercase tracking-wider cursor-pointer transition-all ${
-                        activeTab === "files"
-                          ? "bg-blue-600 text-white shadow-md shadow-blue-500/10"
-                          : theme === "dark" ? "text-slate-400 hover:bg-slate-850" : "text-slate-600 hover:bg-slate-50"
-                      }`}
-                    >
-                      <HardDrive className="h-4 w-4" />
-                      <span>{language === "bn" ? "ফাইল ও স্টোরেজ" : "Files & Storage"}</span>
-                    </button>
-                    <button
-                      onClick={() => setActiveTab("code")}
-                      className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold uppercase tracking-wider cursor-pointer transition-all relative ${
-                        activeTab === "code"
-                          ? "bg-blue-600 text-white shadow-md shadow-blue-500/10"
-                          : theme === "dark" ? "text-slate-400 hover:bg-slate-850" : "text-slate-600 hover:bg-slate-50"
-                      }`}
-                    >
-                      <Terminal className="h-4 w-4" />
-                      <span>{language === "bn" ? "লাইভ কোডিং" : "Live Coding"}</span>
-                      {Object.values(liveActiveEditors).some((e: any) => e?.isEditing) && (
-                        <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-emerald-500 animate-ping" />
-                      )}
-                    </button>
-                  </div>
 
-                  {activeTab === "files" ? (
-                    <>
+                  {/* Left segment content: File Operations and Quas (no tab needed) */}
                       {/* High Resolution Storage Quota Progress Card */}
                   <div className={`p-5 rounded-2xl border transition-all duration-300 relative overflow-hidden flex flex-col gap-3 shadow-xs ${
                     theme === "dark" 
@@ -2652,30 +2568,7 @@ export default function App() {
 
                   </div>
 
-                    </>
-                  ) : (
-                    <LiveCodingWorkspace
-                      currentRoomCode={currentRoomCode}
-                      currentUser={currentUser}
-                      theme={theme}
-                      language={language}
-                      liveCode={liveCode}
-                      localCode={localCode}
-                      liveLanguage={liveLanguage}
-                      liveIsLocked={liveIsLocked}
-                      liveOwnerId={liveOwnerId}
-                      liveOwnerName={liveOwnerName}
-                      liveOwnerEmail={liveOwnerEmail}
-                      livePermissions={livePermissions}
-                      liveActiveEditors={liveActiveEditors}
-                      liveParticipants={liveParticipants}
-                      handleLocalCodeChange={handleLocalCodeChange}
-                      showStatus={showStatus}
-                      roomData={roomData}
-                      deviceId={deviceId}
-                      guestNickname={guestNickname}
-                    />
-                  )}
+
 
                 </div>
 
