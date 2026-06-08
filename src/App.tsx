@@ -18,11 +18,15 @@ import {
   LogOut, 
   Sparkles, 
   AlertCircle, 
+  AlertTriangle,
+  Zap,
+  ZapOff,
   FileCheck, 
   Smartphone, 
   Monitor, 
   Languages, 
   RefreshCw,
+  Loader2,
   HelpCircle,
   X,
   Camera,
@@ -378,6 +382,13 @@ export default function App() {
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string>("");
   const [showQrModal, setShowQrModal] = useState<boolean>(false);
   const [showAppQrModal, setShowAppQrModal] = useState<boolean>(false);
+  const [showBulkDownloadConfirm, setShowBulkDownloadConfirm] = useState<boolean>(false);
+  const [bulkDownloadProgress, setBulkDownloadProgress] = useState<{
+    currentFileName: string;
+    currentIndex: number;
+    totalFiles: number;
+    percent: number;
+  } | null>(null);
   const [appQrCodeDataUrl, setAppQrCodeDataUrl] = useState<string>("");
   const [copiedCode, setCopiedCode] = useState<boolean>(false);
   const [copiedFileId, setCopiedFileId] = useState<string | null>(null);
@@ -393,6 +404,10 @@ export default function App() {
   // QR scanner states
   const [showScanner, setShowScanner] = useState<boolean>(false);
   const [scannerError, setScannerError] = useState<string | null>(null);
+  const [cameraStatus, setCameraStatus] = useState<"checking" | "active" | "blocked">("checking");
+  const [isTorchSupported, setIsTorchSupported] = useState<boolean>(false);
+  const [isTorchOn, setIsTorchOn] = useState<boolean>(false);
+  const scannerInstanceRef = useRef<Html5Qrcode | null>(null);
   
   // Timer ticking for countdown remaining
   const [tick, setTick] = useState<number>(0);
@@ -695,17 +710,25 @@ export default function App() {
   useEffect(() => {
     if (!showScanner) {
       setScannerError(null);
+      setIsTorchSupported(false);
+      setIsTorchOn(false);
+      scannerInstanceRef.current = null;
       return;
     }
 
+    setCameraStatus("checking");
     let html5QrCode: Html5Qrcode | null = null;
     let isStopped = false;
+    setIsTorchSupported(false);
+    setIsTorchOn(false);
 
     // Use a small timeout to let the modal mount first
     const timer = setTimeout(() => {
       if (isStopped) return;
       try {
         html5QrCode = new Html5Qrcode("qr-scanner-viewport");
+        scannerInstanceRef.current = html5QrCode;
+
         html5QrCode.start(
           { facingMode: "environment" },
           {
@@ -749,14 +772,51 @@ export default function App() {
             } else {
               setScannerError(
                 language === "bn" 
-                  ? "সধীক শেয়ার রুম কোড সনাক্ত করা যায়নি।" 
+                  ? "সঠিক শেয়ার রুম কোড সনাক্ত করা যায়নি।" 
                   : "Could not find a valid 4-digit room code in the scanned QR."
               );
             }
           },
           () => {}
-        ).catch((err) => {
+        ).then(() => {
+          if (isStopped || !html5QrCode) return;
+          setCameraStatus("active");
+          // Inspect torch/flashlight availability with a small delay
+          setTimeout(() => {
+            if (isStopped || !html5QrCode) return;
+            let hasTorch = false;
+            try {
+              const capabilities = html5QrCode.getRunningTrackCapabilities();
+              if (capabilities && (capabilities as any).torch) {
+                hasTorch = true;
+              }
+            } catch (e) {
+              console.warn("getRunningTrackCapabilities torch check failed:", e);
+            }
+
+            if (!hasTorch) {
+              // Try manual check on track
+              try {
+                const video = document.querySelector("#qr-scanner-viewport video") as HTMLVideoElement;
+                if (video && video.srcObject) {
+                  const stream = video.srcObject as MediaStream;
+                  const track = stream.getVideoTracks()[0];
+                  if (track && typeof track.getCapabilities === "function") {
+                    const caps = track.getCapabilities();
+                    if ("torch" in caps) {
+                      hasTorch = true;
+                    }
+                  }
+                }
+              } catch (e) {
+                console.warn("Manual track capability checks failed too:", e);
+              }
+            }
+            setIsTorchSupported(hasTorch);
+          }, 350);
+        }).catch((err) => {
           console.error("Camera start failed:", err);
+          setCameraStatus("blocked");
           setScannerError(
             language === "bn" 
               ? "ক্যামেরা চালু করা যায়নি বা পারমিশন দেয়া হয়নি।" 
@@ -765,12 +825,14 @@ export default function App() {
         });
       } catch (err) {
         console.error("Failed to initialize Html5Qrcode:", err);
+        setCameraStatus("blocked");
       }
     }, 150);
 
     return () => {
       isStopped = true;
       clearTimeout(timer);
+      scannerInstanceRef.current = null;
       if (html5QrCode) {
         if (html5QrCode.isScanning) {
           html5QrCode.stop().catch((e) => console.error("Error stopping scanner on cleanup:", e));
@@ -1045,6 +1107,94 @@ export default function App() {
     }
   };
 
+  const startBulkDownload = async (nonPasscodeFiles: FileMeta[]) => {
+    if (!currentRoomCode) return;
+    const currentFiles = Object.values(roomData?.files || {}) as FileMeta[];
+
+    showStatus(
+      language === "bn"
+        ? `${nonPasscodeFiles.length}টি ফাইল ক্রমানুসারে ডাউনলোড করা হচ্ছে...`
+        : `Downloading ${nonPasscodeFiles.length} file(s) sequentially...`,
+      "info"
+    );
+
+    if (currentFiles.length > nonPasscodeFiles.length) {
+      const lockedCount = currentFiles.length - nonPasscodeFiles.length;
+      setTimeout(() => {
+        showStatus(
+          language === "bn"
+            ? `${lockedCount}টি পাসওয়ার্ড-সুরক্ষিত ফাইল আলাদাভাবে ডাউনলোড করতে হবে।`
+            : `${lockedCount} password-protected resource(s) must be downloaded individually.`,
+          "info"
+        );
+      }, 1500);
+    }
+
+    for (let i = 0; i < nonPasscodeFiles.length; i++) {
+      const file = nonPasscodeFiles[i];
+      const downloadUrl = `/api/download/${currentRoomCode}/${file.id}${currentPasscode ? `?passcode=${currentPasscode}` : ""}`;
+      
+      if (i > 0) {
+        // Smooth delay animation between files
+        const totalSteps = 40; // 800ms
+        for (let s = 1; s <= totalSteps; s++) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          const stepProgress = s / totalSteps;
+          const prevPercent = ((i - 1) / nonPasscodeFiles.length) * 100;
+          const targetPercent = (i / nonPasscodeFiles.length) * 100;
+          const currentPercent = Math.round(prevPercent + (stepProgress * (targetPercent - prevPercent)));
+          setBulkDownloadProgress(prev => prev ? {
+            ...prev,
+            percent: Math.min(100, currentPercent)
+          } : null);
+        }
+      }
+
+      setBulkDownloadProgress({
+        currentFileName: file.name,
+        currentIndex: i + 1,
+        totalFiles: nonPasscodeFiles.length,
+        percent: Math.round((i / nonPasscodeFiles.length) * 100)
+      });
+
+      try {
+        const link = document.createElement("a");
+        link.href = downloadUrl;
+        link.setAttribute("download", file.name);
+        link.setAttribute("target", "_blank");
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      } catch (err) {
+        console.error("Sequenced download failed", err);
+      }
+    }
+
+    // Complete transition to 100% after last download is fired
+    if (nonPasscodeFiles.length > 0) {
+      const totalSteps = 25; // 500ms finish line transition
+      for (let s = 1; s <= totalSteps; s++) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        const stepProgress = s / totalSteps;
+        const prevPercent = ((nonPasscodeFiles.length - 1) / nonPasscodeFiles.length) * 100;
+        const currentPercent = Math.round(prevPercent + (stepProgress * (100 - prevPercent)));
+        setBulkDownloadProgress(prev => prev ? {
+          ...prev,
+          percent: Math.min(100, currentPercent)
+        } : null);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    setBulkDownloadProgress(null);
+
+    const hasAnyAutoDelete = nonPasscodeFiles.some((f) => f.autoDelete || (f.maxDownloads && f.downloadCount + 1 >= f.maxDownloads));
+    if (hasAnyAutoDelete) {
+      setTimeout(() => {
+        fetchRoomInfo(currentRoomCode);
+      }, 3500);
+    }
+  };
+
   const handleDownloadAll = async () => {
     if (!currentRoomCode || !roomData?.files) return;
 
@@ -1077,51 +1227,94 @@ export default function App() {
       return;
     }
 
-    showStatus(
-      language === "bn"
-        ? `${nonPasscodeFiles.length}টি ফাইল ক্রমানুসারে ডাউনলোড করা হচ্ছে...`
-        : `Downloading ${nonPasscodeFiles.length} file(s) sequentially...`,
-      "info"
-    );
+    if (currentFiles.length > 3) {
+      setShowBulkDownloadConfirm(true);
+      return;
+    }
 
-    if (currentFiles.length > nonPasscodeFiles.length) {
-      const lockedCount = currentFiles.length - nonPasscodeFiles.length;
-      setTimeout(() => {
+    await startBulkDownload(nonPasscodeFiles);
+  };
+
+  const extendRoomLife = async () => {
+    if (!currentRoomCode || !roomData) return;
+    if (credits === null || credits < 75) {
+      showStatus(
+        language === "bn"
+          ? "পর্যাপ্ত কয়েন নেই! রুমের মেয়াদ বাড়ানোর জন্য ৭৫টি কয়েন প্রয়োজন।"
+          : "Not enough credits! Extending room costs 75 credits.",
+        "error"
+      );
+      return;
+    }
+    try {
+      if (currentUser) {
+        await updateDoc(doc(db, "users", currentUser.uid), { credits: credits - 75 });
+      }
+      const res = await fetch(`/api/room/extend/${currentRoomCode}`, { method: "POST" });
+      const json = await res.json();
+      if (json.success && roomData) {
+        setRoomData({ ...roomData, expiresAt: json.expiresAt });
         showStatus(
           language === "bn"
-            ? `${lockedCount}টি পাসওয়ার্ড-সুরক্ষিত ফাইল আলাদাভাবে ডাউনলোড করতে হবে।`
-            : `${lockedCount} password-protected resource(s) must be downloaded individually.`,
-          "info"
+            ? "রুমের মেয়াদ ১ ঘণ্টা বাড়ানো হয়েছে! (-৭৫ কয়েন)"
+            : "Room extended by 1 hour (-75 credits)",
+          "success"
         );
-      }, 1500);
+      } else {
+        showStatus(
+          language === "bn" ? "মেয়াদ বর্ধিতকরণ ব্যর্থ হয়েছে।" : "Extend failed.",
+          "error"
+        );
+      }
+    } catch (err: any) {
+      showStatus(
+        language === "bn" ? "মেয়াদ বর্ধিতকরণ ব্যর্থ হয়েছে।" : "Extend failed.",
+        "error"
+      );
+    }
+  };
+
+  const toggleScannerTorch = async () => {
+    if (!scannerInstanceRef.current) return;
+    const nextTorchState = !isTorchOn;
+    
+    let success = false;
+    try {
+      await scannerInstanceRef.current.applyVideoConstraints({
+        advanced: [{ torch: nextTorchState } as any]
+      });
+      success = true;
+    } catch (e) {
+      console.warn("applyVideoConstraints torch failed:", e);
     }
 
-    for (let i = 0; i < nonPasscodeFiles.length; i++) {
-      const file = nonPasscodeFiles[i];
-      const downloadUrl = `/api/download/${currentRoomCode}/${file.id}${currentPasscode ? `?passcode=${currentPasscode}` : ""}`;
-      
-      if (i > 0) {
-        await new Promise((resolve) => setTimeout(resolve, 800));
-      }
-
+    if (!success) {
       try {
-        const link = document.createElement("a");
-        link.href = downloadUrl;
-        link.setAttribute("download", file.name);
-        link.setAttribute("target", "_blank");
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-      } catch (err) {
-        console.error("Sequenced download failed", err);
+        const video = document.querySelector("#qr-scanner-viewport video") as HTMLVideoElement;
+        if (video && video.srcObject) {
+          const stream = video.srcObject as MediaStream;
+          const track = stream.getVideoTracks()[0];
+          if (track && typeof track.applyConstraints === "function") {
+            await track.applyConstraints({
+              advanced: [{ torch: nextTorchState } as any]
+            });
+            success = true;
+          }
+        }
+      } catch (e) {
+        console.warn("Fallback track applyConstraints failed:", e);
       }
     }
 
-    const hasAnyAutoDelete = nonPasscodeFiles.some((f) => f.autoDelete || (f.maxDownloads && f.downloadCount + 1 >= f.maxDownloads));
-    if (hasAnyAutoDelete) {
-      setTimeout(() => {
-        fetchRoomInfo(currentRoomCode);
-      }, 3500);
+    if (success) {
+      setIsTorchOn(nextTorchState);
+    } else {
+      showStatus(
+        language === "bn" 
+          ? "ফ্ল্যাশলাইট অন/অফ করতে সমস্যা হয়েছে।" 
+          : "Failed to toggle flashlight.",
+        "error"
+      );
     }
   };
 
@@ -1527,6 +1720,53 @@ export default function App() {
             <FileCheck className="h-5 w-5 shrink-0 text-emerald-600" />
           )}
           <span className="font-semibold leading-snug">{statusMessage.text}</span>
+        </div>
+      )}
+
+      {/* Bulk Download Progress Toast Notification */}
+      {bulkDownloadProgress && (
+        <div 
+          className={`fixed bottom-4 right-4 z-50 p-4 rounded-2xl shadow-2xl border flex flex-col gap-3 w-full max-w-sm transition-all duration-300 animate-fade-in ${
+            theme === "dark" 
+              ? "bg-slate-900/95 backdrop-blur-md border-slate-800 text-white shadow-black/85" 
+              : "bg-white/95 backdrop-blur-md border-slate-205 text-slate-900 shadow-slate-100/60"
+          }`}
+          id="bulk-download-progress-toast"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className={`h-9 w-9 rounded-xl flex items-center justify-center shrink-0 ${theme === "dark" ? "bg-blue-950 text-blue-400" : "bg-blue-50 text-blue-600"}`}>
+                {bulkDownloadProgress.percent < 100 ? (
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                ) : (
+                  <FileCheck className="h-5 w-5 text-emerald-500 animate-bounce" />
+                )}
+              </span>
+              <div className="flex flex-col text-left">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-400 leading-none">
+                  {language === "bn" ? "ডাউনলোড প্রোগ্রেস" : "Downloading All Files"} ({bulkDownloadProgress.currentIndex}/{bulkDownloadProgress.totalFiles})
+                </span>
+                <span className="text-xs font-bold line-clamp-1 max-w-[200px] mt-1 text-slate-900 dark:text-white leading-tight">
+                  {bulkDownloadProgress.currentFileName}
+                </span>
+              </div>
+            </div>
+            
+            <div className="text-right shrink-0">
+              <span className="text-[10px] font-mono font-black text-blue-500 px-2 py-1 rounded bg-blue-500/10 border border-blue-500/10">
+                {bulkDownloadProgress.percent}%
+              </span>
+            </div>
+          </div>
+
+          <div className="w-full">
+            <div className="w-full bg-slate-100 dark:bg-slate-800/80 rounded-full h-1.5 overflow-hidden">
+              <div 
+                className={`h-full rounded-full transition-all duration-300 ${bulkDownloadProgress.percent < 100 ? "bg-blue-600" : "bg-emerald-500"}`} 
+                style={{ width: `${bulkDownloadProgress.percent}%` }} 
+              />
+            </div>
+          </div>
         </div>
       )}
 
@@ -2039,6 +2279,43 @@ export default function App() {
             /* ACTIVE SHARING CONSOLE DASHBOARD VIEW */
             <div className="flex flex-col gap-6 max-w-5xl mx-auto w-full">
               
+              {/* Room Expiration Warning Banner (within 10 minutes) */}
+              {roomData?.expiresAt && (roomData.expiresAt - Date.now() <= 10 * 60 * 1000) && (roomData.expiresAt - Date.now() > 0) && (
+                <div 
+                  className={`flex flex-col sm:flex-row items-center justify-between gap-4 p-4 px-5 rounded-2xl border transition-all duration-300 animate-pulse text-left ${
+                    theme === "dark" 
+                      ? "bg-rose-950/20 border-rose-900 text-rose-200" 
+                      : "bg-rose-50 border-rose-200 text-rose-800"
+                  }`}
+                  id="room-expiration-warning-banner"
+                >
+                  <div className="flex items-center gap-3">
+                    <span className={`h-8 w-8 rounded-lg flex items-center justify-center shrink-0 ${theme === "dark" ? "bg-rose-950 text-rose-400" : "bg-rose-100 text-rose-600"}`}>
+                      <AlertTriangle className="h-4 w-4 text-rose-500 animate-bounce" />
+                    </span>
+                    <div className="flex flex-col">
+                      <span className="text-xs font-black uppercase tracking-wider">
+                        {language === "bn" ? "রুমের মেয়াদ শেষ হতে চলেছে!" : "Room Expiring Soon!"}
+                      </span>
+                      <span className="text-[11px] font-semibold opacity-90 mt-0.5">
+                        {language === "bn"
+                          ? `রুমটি ${formatTimeRemaining(roomData.expiresAt)} এর মধ্যে ডিলিট হয়ে যাবে! আপনার ফাইলগুলো সংরক্ষণ করুন অথবা মেয়াদ বাড়িয়ে নিন।`
+                          : `This room will expire in ${formatTimeRemaining(roomData.expiresAt)}! Please save your files or extend the room life.`}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 self-stretch sm:self-auto shrink-0">
+                    <button
+                      onClick={extendRoomLife}
+                      className="w-full sm:w-auto text-xs font-black px-4 py-2 uppercase tracking-wide rounded-xl shadow-sm cursor-pointer select-none border transition-all bg-rose-600 border-rose-600 text-white hover:bg-rose-500 hover:border-rose-500 active:scale-95"
+                      id="extend-expiry-banner-btn"
+                    >
+                      {language === "bn" ? "মেয়াদ বাড়ান (৭৫ কয়েন)" : "Extend (+1H / 75C)"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Connected Header Strip (emulates mobile sidebar or live details) */}
               <div className={`border rounded-2xl p-5 shadow-sm flex flex-col sm:flex-row items-stretch justify-between gap-4 transition-colors duration-300 ${theme === "dark" ? "bg-slate-900 border-slate-800" : "bg-white border-slate-200"}`}>
                 <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
@@ -2075,25 +2352,7 @@ export default function App() {
                           </span>
                         </div>
                         <button
-                          onClick={async () => {
-                            if (credits === null || credits < 75) {
-                              showStatus("Not enough credits! Extending room costs 75 credits.", "error");
-                              return;
-                            }
-                            try {
-                              if (currentUser) {
-                                await updateDoc(doc(db, "users", currentUser.uid), { credits: credits - 75 });
-                              }
-                              const res = await fetch(`/api/room/extend/${currentRoomCode}`, { method: "POST" });
-                              const json = await res.json();
-                              if (json.success && roomData) {
-                                setRoomData({ ...roomData, expiresAt: json.expiresAt });
-                                showStatus("Room extended by 1 hour (-75 credits)", "success");
-                              }
-                            } catch (err: any) {
-                              showStatus("Extended failed.", "error");
-                            }
-                          }}
+                          onClick={extendRoomLife}
                           className={`text-[9px] font-bold px-2 py-1 uppercase tracking-wider rounded border shadow-sm transition-all cursor-pointer select-none ${theme === "dark" ? "bg-slate-800 border-slate-700 text-blue-400 hover:bg-slate-700" : "bg-slate-100 border-blue-200 text-blue-700 hover:bg-slate-200"}`}
                         >
                           Extend (+1H)
@@ -3005,24 +3264,93 @@ export default function App() {
         </div>
       )}
 
-      {/* Camera QR scanner modal */}
-      {showScanner && (
-        <div className="fixed inset-0 bg-slate-950/65 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in" id="qr-scanner-modal-overlay">
-          <style>{`
-            @keyframes qrlaser {
-              0% { top: 0%; }
-              50% { top: 100%; }
-              100% { top: 0%; }
-            }
-            #qr-scanner-viewport video {
-              width: 100% !important;
-              height: 100% !important;
-              object-fit: cover !important;
-              border-radius: 1rem !important;
-            }
-          `}</style>
-          
+      {/* Bulk Download Confirmation Modal */}
+      {showBulkDownloadConfirm && (
+        <div className="fixed inset-0 bg-slate-950/65 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in" id="bulk-download-confirm-modal">
           <div className={`rounded-3xl p-6 sm:p-8 max-w-sm w-full mx-auto relative shadow-2xl flex flex-col items-center text-center gap-4 transition-colors duration-300 ${theme === "dark" ? "bg-slate-900 border border-slate-800 shadow-black/80" : "bg-white border border-slate-100"}`}>
+            
+            <button 
+              onClick={() => setShowBulkDownloadConfirm(false)}
+              className={`absolute top-4 right-4 p-1.5 rounded-full transition-all cursor-pointer ${theme === "dark" ? "hover:bg-slate-800 text-slate-500" : "hover:bg-slate-100 text-slate-400"}`}
+              id="bulk-download-confirm-close-btn"
+            >
+              <X className="h-5 w-5" />
+            </button>
+
+            <span className={`h-11 w-11 rounded-full flex items-center justify-center shadow-inner ${theme === "dark" ? "bg-blue-950/50 text-blue-400" : "bg-blue-50 text-blue-600"}`}>
+              <Download className="h-5.5 w-5.5 stroke-[2.5]" />
+            </span>
+
+            <div className="flex flex-col">
+              <h3 className={`text-md font-extrabold transition-colors ${theme === "dark" ? "text-white" : "text-slate-900"}`}>
+                {language === "bn" ? "ডাউনলোডের নিশ্চিতকরণ" : "Confirm Bulk Download"}
+              </h3>
+              <p className="text-xs text-slate-400 mt-2 leading-relaxed font-semibold">
+                {language === "bn" 
+                  ? `রুমটিতে ৩টির বেশি ফাইল রয়েছে। আপনি কি সব ফাইল একত্রে ডাউনলোড করতে চান? এটি আপনার ব্রাউজারে একাধিক ডাউনলোড ট্রিগার করবে।`
+                  : `This room has more than 3 files. Are you sure you want to download all files sequentially? This will trigger multiple downloads in your browser.`}
+              </p>
+            </div>
+
+            <div className="w-full flex flex-col gap-2 mt-2">
+              <button
+                onClick={async () => {
+                  setShowBulkDownloadConfirm(false);
+                  if (roomData?.files) {
+                    const currentFiles = Object.values(roomData.files) as FileMeta[];
+                    const nonPasscodeFiles = currentFiles.filter((f) => !f.hasPasscode);
+                    await startBulkDownload(nonPasscodeFiles);
+                  }
+                }}
+                className={`w-full py-3 rounded-xl text-xs font-bold uppercase tracking-wider cursor-pointer shadow-sm transition-all bg-blue-600 hover:bg-blue-700 text-white border border-blue-500`}
+                id="bulk-download-confirm-yes"
+              >
+                {language === "bn" ? "হ্যাঁ, ডাউনলোড করুন" : "Yes, Download All"}
+              </button>
+              <button
+                onClick={() => setShowBulkDownloadConfirm(false)}
+                className={`w-full py-3 rounded-xl text-xs font-bold uppercase tracking-wider cursor-pointer shadow-sm transition-all ${theme === "dark" ? "bg-slate-850 hover:bg-slate-750 text-slate-300" : "bg-slate-100 hover:bg-slate-250 text-slate-700"}`}
+                id="bulk-download-confirm-no"
+              >
+                {language === "bn" ? "বাতিল" : "Cancel"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Camera QR scanner modal */}
+      <AnimatePresence>
+        {showScanner && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.25, ease: "easeOut" }}
+            className="fixed inset-0 bg-slate-950/65 backdrop-blur-xs flex items-center justify-center p-4 z-50"
+            id="qr-scanner-modal-overlay"
+          >
+            <style>{`
+              @keyframes qrlaser {
+                0% { top: 0%; }
+                50% { top: 100%; }
+                100% { top: 0%; }
+              }
+              #qr-scanner-viewport video {
+                width: 100% !important;
+                height: 100% !important;
+                object-fit: cover !important;
+                border-radius: 1rem !important;
+              }
+            `}</style>
+            
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 35 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 30 }}
+              transition={{ type: "spring", damping: 26, stiffness: 340 }}
+              className={`rounded-3xl p-6 sm:p-8 max-w-sm w-full mx-auto relative shadow-2xl flex flex-col items-center text-center gap-4 transition-colors duration-300 ${theme === "dark" ? "bg-slate-900 border border-slate-800 shadow-black/80" : "bg-white border border-slate-100"}`}
+            >
             
             <button 
               onClick={() => setShowScanner(false)}
@@ -3035,6 +3363,48 @@ export default function App() {
             <span className={`h-11 w-11 rounded-full flex items-center justify-center shadow-inner ${theme === "dark" ? "bg-blue-950/50 text-blue-400" : "bg-blue-50 text-blue-600"}`}>
               <Camera className="h-5.5 w-5.5 stroke-[2.5]" />
             </span>
+
+            {/* Camera Permissions Status Indicator */}
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] uppercase tracking-wider font-extrabold border transition-all shadow-sm ${
+              theme === "dark" 
+                ? "bg-slate-950/40 border-slate-800" 
+                : "bg-slate-50 border-slate-200"
+            }`} id="camera-permission-status-badge">
+              <span className="relative flex h-2 w-2 shrink-0">
+                {cameraStatus === "active" ? (
+                  <>
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400/75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                  </>
+                ) : cameraStatus === "checking" ? (
+                  <>
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400/75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                  </>
+                ) : (
+                  <>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500 shadow-[0_0_6px_#f43f5e]"></span>
+                  </>
+                )}
+              </span>
+              <span className={theme === "dark" ? "text-slate-400" : "text-slate-500"}>
+                {language === "bn" ? "ক্যামেরা পারমিশন: " : "Camera Status: "}
+                <span className={`font-black ${
+                  cameraStatus === "active" 
+                    ? "text-emerald-500" 
+                    : cameraStatus === "blocked" 
+                      ? "text-rose-500" 
+                      : "text-amber-500"
+                }`}>
+                  {cameraStatus === "active" 
+                    ? (language === "bn" ? "সক্রিয়" : "Active & Glowing") 
+                    : cameraStatus === "blocked" 
+                      ? (language === "bn" ? "অবরুদ্ধ / এরর" : "Blocked / Error") 
+                      : (language === "bn" ? "কানেক্ট করা হচ্ছে..." : "Connecting...")
+                  }
+                </span>
+              </span>
+            </div>
 
             <div className="flex flex-col">
               <h3 className={`text-lg font-extrabold transition-colors ${theme === "dark" ? "text-white" : "text-slate-900"}`}>
@@ -3068,6 +3438,34 @@ export default function App() {
               </div>
             </div>
 
+            {/* Enable Flash / Torch Button */}
+            {isTorchSupported && (
+              <button
+                onClick={toggleScannerTorch}
+                className={`w-full py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer transition-all border ${
+                  isTorchOn
+                    ? "bg-amber-500 hover:bg-amber-600 border-amber-400 text-white shadow-md shadow-amber-500/25"
+                    : theme === "dark"
+                      ? "bg-slate-850 hover:bg-slate-800 border-slate-750 text-slate-300"
+                      : "bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700"
+                }`}
+                id="toggle-torch-btn"
+                title={language === "bn" ? "ফ্ল্যাশ লাইট অন বা অফ করুন" : "Toggle camera flash / light"}
+              >
+                {isTorchOn ? (
+                  <>
+                    <ZapOff className="h-4 w-4 animate-pulse text-white" />
+                    <span>{language === "bn" ? "ফ্ল্যাশ বন্ধ করুন" : "Disable Flash"}</span>
+                  </>
+                ) : (
+                  <>
+                    <Zap className="h-4 w-4 text-amber-500 fill-amber-500/15" />
+                    <span>{language === "bn" ? "ফ্ল্যাশ অন করুন" : "Enable Flash"}</span>
+                  </>
+                )}
+              </button>
+            )}
+
             {/* Error display if camera fails */}
             {scannerError && (
               <div className={`w-full flex items-center gap-2 p-3 rounded-xl text-xs font-semibold text-left border ${theme === "dark" ? "bg-rose-950/40 border-rose-900/40 text-rose-300" : "bg-rose-50 border-rose-100 text-rose-800"}`}>
@@ -3083,9 +3481,10 @@ export default function App() {
             >
               {text.closeBtn[language]}
             </button>
-          </div>
-        </div>
+          </motion.div>
+        </motion.div>
       )}
+    </AnimatePresence>
 
       {/* Premium Passcode Verification Modal */}
       {pendingRoomCode && (
