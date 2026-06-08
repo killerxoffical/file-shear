@@ -39,6 +39,7 @@ interface ChatMessage {
   senderName: string;
   type: "text" | "voice" | "image" | "file_request";
   content: string; // Base64 audio/image or text
+  transcription?: string; // Additional transcription
   createdAt: number;
 }
 
@@ -545,7 +546,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  app.listen(Number(PORT), "0.0.0.0", () => {
     console.log(`[Instant File Share] Server successfully running at http://0.0.0.0:${PORT}`);
   });
 }

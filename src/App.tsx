@@ -138,14 +138,23 @@ export default function App() {
 
       if (user) {
         const userRef = doc(db, "users", user.uid);
-        unsubscribeCredits = onSnapshot(userRef, (docSnap) => {
-          if (docSnap.exists()) {
-            setCredits(docSnap.data().credits);
-          } else {
-            // New user, give 500 init credits
-            setDoc(userRef, { email: user.email, credits: 500, createdAt: Date.now() });
-          }
-        });
+        
+        // Ensure user document exists on log in
+        setDoc(userRef, { 
+          email: user.email || "Unknown", 
+          lastLog: Date.now() 
+        }, { merge: true }).then(() => {
+          unsubscribeCredits = onSnapshot(userRef, (docSnap) => {
+            if (docSnap.exists()) {
+               const data = docSnap.data();
+               if (data.credits === undefined) {
+                 setDoc(userRef, { credits: 500, createdAt: Date.now() }, { merge: true });
+               } else {
+                 setCredits(data.credits);
+               }
+            }
+          });
+        }).catch(err => console.error("Error setting up user doc:", err));
       } else {
         setCredits(null);
       }
@@ -179,7 +188,7 @@ export default function App() {
   const [autoDeleteOnDownload, setAutoDeleteOnDownload] = useState<boolean>(true); // Default true for user requested unlimited style
   
   // Staged Upload Options & Local Previews
-  const [stagedFile, setStagedFile] = useState<File | null>(null);
+  const [stagedFiles, setStagedFiles] = useState<File[]>([]);
   const [stagedMaxDownloads, setStagedMaxDownloads] = useState<number>(1); // Default to 1-time download
   const [stagedExpiresIn, setStagedExpiresIn] = useState<number>(60); // Default to 60 mins (1 hour)
   const [stagedPasscode, setStagedPasscode] = useState<string>("");
@@ -923,52 +932,59 @@ export default function App() {
   // Select helper to preview & open download parameters configurator before uploading
   const handleFileSelect = (files: FileList | null) => {
     if (!files || files.length === 0 || !currentRoomCode) return;
-    const file = files[0];
-
-    // Check local limit (10GB = 10,737,418,240 bytes)
+    
     const MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024;
-    if (file.size > MAX_FILE_SIZE) {
-      showStatus(
-        language === "bn" 
-          ? "ফাইলটি অনেক বড়! সর্বোচ্চ সাইজ ১০জিবি (10GB) অনুমোদিত।" 
-          : "File limit exceeded. Max supported file size is 10GB.", 
-        "error"
-      );
-      return;
+    const ROOM_MAX_SIZE = 100 * 1024 * 1024;
+    const fileArray = Array.from(files);
+    let totalNewSize = 0;
+
+    for (const f of fileArray) {
+      if (f.size > MAX_FILE_SIZE) {
+        showStatus(
+          language === "bn" 
+            ? `ফাইল ${f.name} অনেক বড়! সর্বোচ্চ সাইজ ১০জিবি (10GB) অনুমোদিত।` 
+            : `File ${f.name} limit exceeded. Max supported size is 10GB.`, 
+          "error"
+        );
+        return;
+      }
+      totalNewSize += f.size;
     }
 
-    // Verify room storage (100MB Limit)
-    const ROOM_MAX_SIZE = 100 * 1024 * 1024;
-    if (totalBytesUsed + file.size > ROOM_MAX_SIZE) {
+    if (totalBytesUsed + totalNewSize > ROOM_MAX_SIZE) {
       showStatus(
         language === "bn"
-          ? "রুমের স্টোরেজ ফুল! সর্বোচ্চ ১০০ মেগাবাইট (100MB) লিমিট রয়েছে। অনুগ্রহ করে পুরাতন ফাইল ডিলিট করুন।"
-          : "Declined! This file fits over the remaining room quota (100MB capacity limit). Delete some files first.",
+          ? "রুমের স্টোরেজ ফুল! সর্বোচ্চ ১০০ মেগাবাইট (100MB) লিমিট রয়েছে।"
+          : "Declined! Total files exceed remaining room quota (100MB capacity limit).",
         "error"
       );
       return;
     }
 
-    setStagedFile(file);
-    // Initialize defaults
-    setStagedMaxDownloads(1); // 1-time download by default
-    setStagedExpiresIn(60);   // 1 hour expiry duration by default
+    setStagedFiles(fileArray);
+    setStagedMaxDownloads(1);
+    setStagedExpiresIn(60);
     setStagedPasscode("");
 
-    // Generate local preview URL
-    if (file.type.startsWith("image/")) {
-      const url = URL.createObjectURL(file);
-      setStagedPreviewUrl(url);
-      setStagedTextContent(null);
-    } else if (file.type.startsWith("text/") || file.name.endsWith(".txt") || file.name.endsWith(".json") || file.name.endsWith(".js") || file.name.endsWith(".ts")) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        if (e.target?.result) {
-          setStagedTextContent((e.target.result as string).substring(0, 800));
-        }
-      };
-      reader.readAsText(file);
-      setStagedPreviewUrl(null);
+    if (fileArray.length === 1) {
+      const file = fileArray[0];
+      if (file.type.startsWith("image/")) {
+        const url = URL.createObjectURL(file);
+        setStagedPreviewUrl(url);
+        setStagedTextContent(null);
+      } else if (file.type.startsWith("text/") || file.name.endsWith(".txt") || file.name.endsWith(".json") || file.name.endsWith(".js") || file.name.endsWith(".ts")) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          if (e.target?.result) {
+            setStagedTextContent((e.target.result as string).substring(0, 800));
+          }
+        };
+        reader.readAsText(file);
+        setStagedPreviewUrl(null);
+      } else {
+        setStagedPreviewUrl(null);
+        setStagedTextContent(null);
+      }
     } else {
       setStagedPreviewUrl(null);
       setStagedTextContent(null);
@@ -979,84 +995,105 @@ export default function App() {
     if (stagedPreviewUrl) {
       URL.revokeObjectURL(stagedPreviewUrl);
     }
-    setStagedFile(null);
+    setStagedFiles([]);
     setStagedPreviewUrl(null);
     setStagedTextContent(null);
     setStagedPasscode("");
   };
 
-  const confirmAndUploadFile = () => {
-    if (!stagedFile || !currentRoomCode) return;
+  const confirmAndUploadFile = async () => {
+    if (stagedFiles.length === 0 || !currentRoomCode) return;
 
     setIsUploading(true);
     setUploadProgress(0);
-    setUploadingFileName(stagedFile.name);
 
-    const formData = new FormData();
-    formData.append("file", stagedFile);
-    formData.append("autoDelete", String(stagedMaxDownloads === 1));
-    formData.append("maxDownloads", String(stagedMaxDownloads));
-    formData.append("expiresInMinutes", String(stagedExpiresIn));
-    if (stagedPasscode.trim()) {
-      formData.append("filePasscode", stagedPasscode.trim());
-    }
+    const uploadFile = (file: File, index: number, total: number) => {
+      return new Promise<void>((resolve, reject) => {
+        setUploadingFileName(total > 1 ? `${file.name} (${index + 1}/${total})` : file.name);
+        
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("autoDelete", String(stagedMaxDownloads === 1));
+        formData.append("maxDownloads", String(stagedMaxDownloads));
+        formData.append("expiresInMinutes", String(stagedExpiresIn));
+        if (stagedPasscode.trim()) {
+          formData.append("filePasscode", stagedPasscode.trim());
+        }
 
-    const originalFileName = stagedFile.name;
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", `/api/upload/${currentRoomCode}`);
+        if (currentPasscode) {
+          xhr.setRequestHeader("x-room-passcode", currentPasscode);
+        }
 
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `/api/upload/${currentRoomCode}`);
-    if (currentPasscode) {
-      xhr.setRequestHeader("x-room-passcode", currentPasscode);
-    }
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const filePercent = event.loaded / event.total;
+            const overallPercentage = total > 1 ? Math.round(((index + filePercent) / total) * 100) : Math.round(filePercent * 100);
+            setUploadProgress(Math.min(overallPercentage, 100));
+          }
+        };
 
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        const percentage = Math.round((event.loaded / event.total) * 100);
-        setUploadProgress(percentage);
-      }
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const res = JSON.parse(xhr.responseText);
+              if (res.success) {
+                resolve();
+              } else {
+                reject(new Error(res.error || "Upload failed"));
+              }
+            } catch {
+              reject(new Error("Invalid response"));
+            }
+          } else if (xhr.status === 403) {
+            reject(new Error("Invalid Passcode"));
+          } else {
+            try {
+              const res = JSON.parse(xhr.responseText);
+              reject(new Error(res.error || "Upload failed."));
+            } catch (e) {
+              reject(new Error(language === "bn" ? "আপলোড ব্যর্থ হয়েছে!" : "An unknown issue interrupted the transfer."));
+            }
+          }
+        };
+
+        xhr.onerror = () => reject(new Error(language === "bn" ? "নেটওয়ার্ক ত্রুটি" : "Network error"));
+        xhr.send(formData);
+      });
     };
 
-    xhr.onload = () => {
+    try {
+      let successCount = 0;
+      for (let i = 0; i < stagedFiles.length; i++) {
+        await uploadFile(stagedFiles[i], i, stagedFiles.length);
+        successCount++;
+      }
+      showStatus(
+        language === "bn" 
+          ? `সফলভাবে ${successCount} টি ফাইল আপলোড হয়েছে!` 
+          : `Successfully uploaded ${successCount} file${successCount > 1 ? 's' : ''}!`, 
+        "success"
+      );
+      fetchRoomInfo(currentRoomCode);
+    } catch (err: any) {
+      if (err.message === "Invalid Passcode") {
+        setRoomPasscodePrompt(currentRoomCode);
+      } else {
+        showStatus(err.message || "Upload Failed", "error");
+      }
+    } finally {
       setIsUploading(false);
-      setStagedFile(null);
+      setStagedFiles([]);
       if (stagedPreviewUrl) {
         URL.revokeObjectURL(stagedPreviewUrl);
         setStagedPreviewUrl(null);
       }
       setStagedTextContent(null);
-
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          const res = JSON.parse(xhr.responseText);
-          if (res.success) {
-            showStatus(
-              language === "bn" 
-                ? `ফাইল "${originalFileName}" সফলভাবে আপলোড হয়েছে!` 
-                : `Uploaded "${originalFileName}" successfully!`, 
-              "success"
-            );
-            fetchRoomInfo(currentRoomCode);
-          }
-        } catch (e) {
-          showStatus(language === "bn" ? "রিসপন্স প্রসেস করতে ব্যর্থ" : "Error processing upload response", "error");
-        }
-      } else {
-        try {
-          const res = JSON.parse(xhr.responseText);
-          showStatus(res.error || "Upload failed.", "error");
-        } catch (e) {
-          showStatus("Upload failed.", "error");
-        }
-      }
-    };
-
-    xhr.onerror = () => {
-      setIsUploading(false);
-      setStagedFile(null);
-      showStatus(language === "bn" ? "নেটওয়ার্ক ত্রুটির কারণে আপলোড করা যায়নি।" : "Network error during upload.", "error");
-    };
-
-    xhr.send(formData);
+      setStagedPasscode("");
+      setUploadProgress(100);
+      setTimeout(() => setUploadProgress(0), 1000);
+    }
   };
 
   // Immediate deletion handler
@@ -2015,6 +2052,7 @@ export default function App() {
                     <input
                       ref={fileInputRef}
                       type="file"
+                      multiple
                       className="hidden"
                       onChange={(e) => handleFileSelect(e.target.files)}
                     />
@@ -2893,7 +2931,7 @@ export default function App() {
       )}
 
       {/* Dynamic Staged File Custom Configuration & Local Preview Modal */}
-      {stagedFile && (
+      {stagedFiles.length > 0 && (
         <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fade-in" id="staged-file-modal">
           <div className={`rounded-3xl p-6 sm:p-8 max-w-lg w-full mx-auto relative shadow-2xl flex flex-col gap-5 transition-colors duration-300 ${theme === "dark" ? "bg-slate-900 border border-slate-800 text-white shadow-black/80" : "bg-white border border-slate-150 text-slate-900 shadow-slate-350/20"}`}>
             
@@ -2925,19 +2963,19 @@ export default function App() {
               ) : stagedTextContent ? (
                 <div className="w-full max-h-32 overflow-y-auto font-mono text-[10px] text-left p-3 bg-slate-950 text-emerald-400 rounded-xl leading-relaxed whitespace-pre-wrap select-none border border-emerald-950/40">
                   {stagedTextContent}
-                  {stagedFile.size > 800 && " ... [truncated preview]"}
+                  {stagedFiles[0].size > 800 && " ... [truncated preview]"}
                 </div>
               ) : (
                 <div className="flex items-center gap-3">
                   <span className={`h-11 w-11 rounded-xl flex items-center justify-center font-bold text-xs border ${theme === "dark" ? "bg-slate-900 border-slate-800 text-blue-400" : "bg-white border-slate-200 text-blue-600"}`}>
-                    {(stagedFile.name.split('.').pop() || "RAW").toUpperCase()}
+                    {stagedFiles.length > 1 ? "MULT" : (stagedFiles[0].name.split('.').pop() || "RAW").toUpperCase()}
                   </span>
                   <div className="flex flex-col text-left">
                     <span className="font-semibold text-xs text-slate-400 font-mono">
-                      {language === "bn" ? "কোন প্রিভিউ উপলভ্য নেই" : "No live preview available"}
+                      {stagedFiles.length > 1 ? `${stagedFiles.length} files selected` : (language === "bn" ? "কোন প্রিভিউ উপলভ্য নেই" : "No live preview available")}
                     </span>
                     <span className="text-[10px] italic text-slate-500 mt-0.5">
-                      {language === "bn" ? "আকার ও এক্সটেনশন যাচাই করুন" : "Verify metadata format specifications"}
+                      {stagedFiles.length > 1 ? "Batched configuration" : (language === "bn" ? "আকার ও এক্সটেনশন যাচাই করুন" : "Verify metadata format specifications")}
                     </span>
                   </div>
                 </div>
@@ -2945,11 +2983,13 @@ export default function App() {
               
               {/* Filename & Information details */}
               <div className="w-full mt-3 pt-3 border-t border-dashed border-slate-800/10 flex flex-col sm:flex-row justify-between items-center text-center sm:text-left gap-1">
-                <span className="text-xs font-bold truncate max-w-[280px]" title={stagedFile.name}>
-                  {stagedFile.name}
+                <span className="text-xs font-bold truncate max-w-[280px]" title={stagedFiles.length > 1 ? `${stagedFiles.length} Multiple Files Selected` : stagedFiles[0].name}>
+                  {stagedFiles.length > 1 ? `${stagedFiles.length} Multiple Files Selected` : stagedFiles[0].name}
                 </span>
                 <span className="text-[10px] font-bold font-mono bg-blue-900/40 text-blue-300 px-2 py-0.5 border border-blue-800/50 rounded-md">
-                  {formatBytes(stagedFile.size)}
+                  {stagedFiles.length > 1 
+                    ? formatBytes(stagedFiles.reduce((acc, file) => acc + file.size, 0)) 
+                    : formatBytes(stagedFiles[0].size)}
                 </span>
               </div>
             </div>
@@ -3253,36 +3293,70 @@ export default function App() {
                           <span className="text-lg font-mono font-bold text-amber-500 bg-amber-500/10 px-3 py-1 rounded border border-amber-500/20">{user.credits || 0}</span>
                         </div>
                         <div className="flex flex-col gap-2">
-                          <button
-                            onClick={async () => {
-                              const newAmount = (user.credits || 0) + 100;
-                              try {
-                                await updateDoc(doc(db, "users", user.id), { credits: newAmount });
-                                setAdminUsers(prev => prev.map(u => u.id === user.id ? { ...u, credits: newAmount } : u));
-                                showStatus("Added 100 credits", "success");
-                              } catch(e) {
-                                showStatus("Failed to add", "error");
-                              }
-                            }}
-                            className={`px-3 py-1 text-xs font-bold rounded cursor-pointer transition-colors ${theme === "dark" ? "bg-slate-700 hover:bg-slate-600 text-white" : "bg-white hover:bg-slate-100 border border-slate-200"}`}
-                          >
-                            +100
-                          </button>
-                          <button
-                            onClick={async () => {
-                              const newAmount = (user.credits || 0) + 500;
-                              try {
-                                await updateDoc(doc(db, "users", user.id), { credits: newAmount });
-                                setAdminUsers(prev => prev.map(u => u.id === user.id ? { ...u, credits: newAmount } : u));
-                                showStatus("Added 500 credits", "success");
-                              } catch(e) {
-                                showStatus("Failed to add", "error");
-                              }
-                            }}
-                            className="px-3 py-1 text-xs font-bold rounded cursor-pointer transition-colors bg-blue-600 hover:bg-blue-500 text-white"
-                          >
-                            +500
-                          </button>
+                          <div className="flex gap-1 border border-slate-200 dark:border-slate-700 rounded overflow-hidden">
+                            <button
+                              onClick={async () => {
+                                const newAmount = Math.max(0, (user.credits || 0) - 100);
+                                try {
+                                  await updateDoc(doc(db, "users", user.id), { credits: newAmount });
+                                  setAdminUsers(prev => prev.map(u => u.id === user.id ? { ...u, credits: newAmount } : u));
+                                  showStatus("Removed 100 credits", "success");
+                                } catch(e) {
+                                  showStatus("Failed", "error");
+                                }
+                              }}
+                              className={`px-2 py-1 text-[10px] font-bold cursor-pointer transition-colors ${theme === "dark" ? "bg-slate-800 hover:bg-slate-700 text-slate-300" : "bg-slate-100 hover:bg-slate-200"}`}
+                            >
+                              -100
+                            </button>
+                            <button
+                              onClick={async () => {
+                                const newAmount = (user.credits || 0) + 100;
+                                try {
+                                  await updateDoc(doc(db, "users", user.id), { credits: newAmount });
+                                  setAdminUsers(prev => prev.map(u => u.id === user.id ? { ...u, credits: newAmount } : u));
+                                  showStatus("Added 100 credits", "success");
+                                } catch(e) {
+                                  showStatus("Failed to add", "error");
+                                }
+                              }}
+                              className={`px-2 py-1 text-[10px] font-bold cursor-pointer transition-colors ${theme === "dark" ? "bg-slate-700 hover:bg-slate-600 text-white" : "bg-slate-200 hover:bg-slate-300"}`}
+                            >
+                              +100
+                            </button>
+                          </div>
+                          <div className="flex gap-1 border border-blue-500/30 rounded overflow-hidden">
+                            <button
+                              onClick={async () => {
+                                const newAmount = Math.max(0, (user.credits || 0) - 500);
+                                try {
+                                  await updateDoc(doc(db, "users", user.id), { credits: newAmount });
+                                  setAdminUsers(prev => prev.map(u => u.id === user.id ? { ...u, credits: newAmount } : u));
+                                  showStatus("Removed 500 credits", "success");
+                                } catch(e) {
+                                  showStatus("Failed", "error");
+                                }
+                              }}
+                              className="px-2 py-1 text-[10px] font-bold cursor-pointer transition-colors bg-blue-900/40 hover:bg-blue-800/60 text-blue-300"
+                            >
+                              -500
+                            </button>
+                            <button
+                              onClick={async () => {
+                                const newAmount = (user.credits || 0) + 500;
+                                try {
+                                  await updateDoc(doc(db, "users", user.id), { credits: newAmount });
+                                  setAdminUsers(prev => prev.map(u => u.id === user.id ? { ...u, credits: newAmount } : u));
+                                  showStatus("Added 500 credits", "success");
+                                } catch(e) {
+                                  showStatus("Failed to add", "error");
+                                }
+                              }}
+                              className="px-2 py-1 text-[10px] font-bold cursor-pointer transition-colors bg-blue-600 hover:bg-blue-500 text-white flex-1"
+                            >
+                              +500
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>
