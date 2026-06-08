@@ -1,10 +1,21 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
-import firebaseConfig from '../firebase-applet-config.json';
 
+// Your web app's Firebase configuration
+const firebaseConfig = {
+  apiKey: "AIzaSyBNC4ms6GsG7YjPLTOuyPiWBbuF8XUxVXk",
+  authDomain: "telecome-9c7e0.firebaseapp.com",
+  databaseURL: "https://telecome-9c7e0-default-rtdb.firebaseio.com",
+  projectId: "telecome-9c7e0",
+  storageBucket: "telecome-9c7e0.firebasestorage.app",
+  messagingSenderId: "334926468571",
+  appId: "1:334926468571:web:a36f2ab99d8fab850643fe"
+};
+
+// Initialize Firebase
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId); /* CRITICAL: The app will break without this line */
+export const db = getFirestore(app);
 export const auth = getAuth(app);
 
 export const googleProvider = new GoogleAuthProvider();

@@ -1078,7 +1078,7 @@ export default function App() {
       fetchRoomInfo(currentRoomCode);
     } catch (err: any) {
       if (err.message === "Invalid Passcode") {
-        setRoomPasscodePrompt(currentRoomCode);
+        setPendingRoomCode(currentRoomCode);
       } else {
         showStatus(err.message || "Upload Failed", "error");
       }
