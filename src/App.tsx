@@ -53,7 +53,7 @@ import {
   Users,
   Settings
 } from "lucide-react";
-import { FileMeta, RoomState } from "./types";
+import { FileMeta, RoomState, ChatMessage } from "./types";
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend, AreaChart, Area, XAxis, YAxis, CartesianGrid } from "recharts";
 import { formatBytes, getFileIcon, formatTimeRemaining, formatRelativeTime } from "./utils";
 
@@ -173,7 +173,10 @@ export default function App() {
               updateDoc(userRef, {
                 email: user.email || "Unknown",
                 lastLog: Date.now()
-              }).catch(err => console.error("Error updating log state:", err));
+              }).catch(err => {
+                console.warn("Could not update user last log offline:", err);
+                setIsSyncActive(false);
+              });
             }
           } else {
             // Document doesn't exist, create it with 500 credits
@@ -182,7 +185,10 @@ export default function App() {
               credits: 500,
               createdAt: Date.now(),
               lastLog: Date.now()
-            }).catch(err => console.error("Error creating user doc:", err));
+            }).catch(err => {
+              console.warn("Could not create user document offline:", err);
+              setIsSyncActive(false);
+            });
           }
 
           // Real-time synchronization only for reading (NO writing here)
@@ -192,13 +198,40 @@ export default function App() {
               const data = docSnap.data();
               if (data.credits !== undefined) {
                 setCredits(data.credits);
+                localStorage.setItem(`credits_${user.uid}`, String(data.credits));
               }
             }
           }, (error) => {
             console.error("Error on user credits snapshot:", error);
             setIsSyncActive(false);
           });
-        }).catch(err => console.error("Error reading user doc:", err));
+        }).catch(err => {
+          console.warn("User document read offline fallback enabled:", err.message);
+          setIsSyncActive(false);
+          
+          // Try to recover using local storage cache for offline compatibility
+          const cachedCredits = localStorage.getItem(`credits_${user.uid}`);
+          if (cachedCredits !== null) {
+            setCredits(Number(cachedCredits));
+          } else {
+            setCredits(500); // Default fallback credits when offline and no cache is present
+          }
+
+          // Set up subscriber anyway so it connects when client resumes connection
+          unsubscribeCredits = onSnapshot(userRef, (docSnap) => {
+            setIsSyncActive(true);
+            if (docSnap.exists()) {
+              const data = docSnap.data();
+              if (data.credits !== undefined) {
+                setCredits(data.credits);
+                localStorage.setItem(`credits_${user.uid}`, String(data.credits));
+              }
+            }
+          }, (error) => {
+            console.warn("Suppressing offline credits snapshot listener error:", error);
+            setIsSyncActive(false);
+          });
+        });
       } else {
         setCredits(null);
       }
@@ -226,6 +259,7 @@ export default function App() {
 
   // Upload mechanics
   const [dragActive, setDragActive] = useState<boolean>(false);
+  const [showUploadConfirm, setShowUploadConfirm] = useState<boolean>(false);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [uploadingFileName, setUploadingFileName] = useState<string>("");
@@ -401,6 +435,7 @@ export default function App() {
   const [appQrCodeDataUrl, setAppQrCodeDataUrl] = useState<string>("");
   const [copiedCode, setCopiedCode] = useState<boolean>(false);
   const [copiedFileId, setCopiedFileId] = useState<string | null>(null);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [language, setLanguage] = useState<"en" | "bn">("en"); // Default to English as requested
   
@@ -538,6 +573,69 @@ export default function App() {
     } catch (e) {
       showStatus("Connection error updating reaction.", "error");
       fetchRoomInfo(currentRoomCode, true);
+    }
+  };
+
+  // Copy chat message text / transcription to clipboard
+  const copyMessageText = (msg: ChatMessage) => {
+    let textToCopy = "";
+    if (msg.type === "text") {
+      textToCopy = msg.content;
+    } else if (msg.type === "voice" && msg.transcription) {
+      textToCopy = msg.transcription;
+    } else {
+      textToCopy = `[${msg.type.toUpperCase()}] ${msg.senderName}: ${msg.content}`;
+    }
+    
+    navigator.clipboard.writeText(textToCopy).then(() => {
+      setCopiedMessageId(msg.id);
+      setTimeout(() => setCopiedMessageId(null), 2000);
+      showStatus(language === "bn" ? "মেসেজ কপি করা হয়েছে!" : "Message copied to clipboard!", "success");
+    }).catch(() => {
+      showStatus("Could not copy message.", "error");
+    });
+  };
+
+  // Delete chat message
+  const deleteChatMessage = async (messageId: string) => {
+    if (!currentRoomCode) return;
+    
+    const proceed = window.confirm(
+      language === "bn" 
+        ? "আপনি কি নিশ্চিতভাবে এই মেসেজটি মুছে ফেলতে চান?" 
+        : "Are you sure you want to delete this message?"
+    );
+    if (!proceed) return;
+
+    try {
+      const passcodeHeader = currentPasscode || localStorage.getItem(`room_pass_${currentRoomCode}`) || "";
+      const response = await fetch(`/api/chat/${currentRoomCode}/delete`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-room-passcode": passcodeHeader,
+        },
+        body: JSON.stringify({
+          messageId,
+          senderId: sessionSenderId,
+        }),
+      });
+
+      if (response.ok) {
+        const json = await response.json();
+        if (json.success && json.messages && roomData) {
+          setRoomData({ ...roomData, messages: json.messages });
+          showStatus(
+            language === "bn" ? "মেসেজ ডিলিট করা হয়েছে!" : "Message deleted successfully!",
+            "success"
+          );
+        }
+      } else {
+        const err = await response.json().catch(() => ({}));
+        showStatus(err.error || "Failed to delete message.", "error");
+      }
+    } catch (e) {
+      showStatus("Connection error deleting message.", "error");
     }
   };
 
@@ -3492,6 +3590,33 @@ export default function App() {
                                       </button>
                                     );
                                   })}
+
+                                  {/* Separator line */}
+                                  <div className={`h-4 w-[1px] mx-1 ${theme === "dark" ? "bg-slate-800" : "bg-slate-200"}`} />
+
+                                  {/* Copy Button */}
+                                  <button
+                                    onClick={() => copyMessageText(msg)}
+                                    className={`h-5 w-5 flex items-center justify-center rounded-full hover:scale-110 active:scale-95 transition-all text-slate-400 hover:text-blue-500 hover:bg-blue-500/10`}
+                                    title={language === "bn" ? "মেসেজ কপি করুন" : "Copy Message"}
+                                  >
+                                    {copiedMessageId === msg.id ? (
+                                      <Check className="h-3 w-3 text-emerald-500 stroke-[3]" />
+                                    ) : (
+                                      <Copy className="h-3 w-3" />
+                                    )}
+                                  </button>
+
+                                  {/* Delete Button (if authorized: message sender OR room owner) */}
+                                  {((roomData?.ownerId && (currentUser?.uid === roomData?.ownerId || deviceId === roomData?.ownerId)) || isMe) && (
+                                    <button
+                                      onClick={() => deleteChatMessage(msg.id)}
+                                      className={`h-5 w-5 flex items-center justify-center rounded-full hover:scale-110 active:scale-95 transition-all text-slate-400 hover:text-red-500 hover:bg-red-500/10`}
+                                      title={language === "bn" ? "মেসেজ ডিলিট করুন" : "Delete Message"}
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                    </button>
+                                  )}
                                 </div>
                               </div>
 
@@ -3604,13 +3729,39 @@ export default function App() {
                                   })}
                                 </div>
                               )}
-                              {/* Formatted time stamp */}
-                              <span className="text-[8px] text-slate-450 mt-0.5 px-1 font-mono">
-                                {useRelativeChatTime 
-                                  ? formatRelativeTime(msg.createdAt, language) 
-                                  : new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                                }
-                              </span>
+                              {/* Formatted time stamp with inline actions */}
+                              <div className="flex items-center gap-2 mt-1 px-1 text-[8.5px] font-mono text-slate-455">
+                                <span>
+                                  {useRelativeChatTime 
+                                    ? formatRelativeTime(msg.createdAt, language) 
+                                    : new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                  }
+                                </span>
+                                <span className="opacity-40">|</span>
+                                <button
+                                  onClick={() => copyMessageText(msg)}
+                                  className="hover:text-blue-500 active:scale-90 transition-all font-sans font-bold flex items-center gap-0.5 cursor-pointer outline-none"
+                                >
+                                  {copiedMessageId === msg.id ? (
+                                    <span className="text-emerald-500 flex items-center gap-0.5"><Check className="h-2.5 w-2.5 stroke-[3]" />{language === "bn" ? "কপি হয়েছে" : "Copied"}</span>
+                                  ) : (
+                                    <span className="flex items-center gap-0.5"><Copy className="h-2.5 w-2.5" />{language === "bn" ? "কপি" : "Copy"}</span>
+                                  )}
+                                </button>
+
+                                {((roomData?.ownerId && (currentUser?.uid === roomData?.ownerId || deviceId === roomData?.ownerId)) || isMe) && (
+                                  <>
+                                    <span className="opacity-40">•</span>
+                                    <button
+                                      onClick={() => deleteChatMessage(msg.id)}
+                                      className="hover:text-red-500 active:scale-90 transition-all font-sans font-bold flex items-center gap-0.5 cursor-pointer outline-none"
+                                    >
+                                      <Trash2 className="h-2.5 w-2.5" />
+                                      <span>{language === "bn" ? "ডিলিট" : "Delete"}</span>
+                                    </button>
+                                  </>
+                                )}
+                              </div>
                             </div>
                           );
                         })
@@ -4361,7 +4512,7 @@ export default function App() {
               </button>
               
               <button
-                onClick={confirmAndUploadFile}
+                onClick={() => setShowUploadConfirm(true)}
                 className="flex-1 py-3.5 rounded-xl text-xs font-bold uppercase tracking-wider cursor-pointer text-white bg-blue-600 hover:bg-blue-700 transition-all flex items-center justify-center gap-1.5 shadow-lg shadow-blue-600/20"
               >
                 <FileCheck className="h-4 w-4" />
@@ -4369,6 +4520,130 @@ export default function App() {
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* Real-time Dynamic Upload Confirmation Modal */}
+      {showUploadConfirm && (
+        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 z-[60] animate-fade-in" id="upload-confirmation-modal">
+          <div className={`rounded-3xl p-6 sm:p-8 max-w-sm w-full mx-auto relative shadow-2xl flex flex-col items-center text-center gap-5 transition-colors duration-300 ${theme === "dark" ? "bg-slate-900 border border-slate-800 shadow-black/80 text-white" : "bg-white border border-slate-150 text-slate-900 shadow-slate-350/20"}`}>
+            <div className={`h-14 w-14 rounded-full flex items-center justify-center shadow-inner ${theme === "dark" ? "bg-blue-950/50 text-blue-400" : "bg-blue-50 text-blue-600"}`}>
+              <HelpCircle className="h-7 w-7" />
+            </div>
+            
+            <div className="flex flex-col gap-1.5">
+              <h3 className="text-lg font-black tracking-tight">
+                {language === "bn" ? "আপলোড নিশ্চিতকরণ" : "Confirm File Upload"}
+              </h3>
+              <p className="text-xs text-slate-450 dark:text-slate-400 leading-relaxed font-semibold">
+                {language === "bn" 
+                  ? "আপনি কি নিশ্চিতভাবে এই ফাইলটি আপলোড করতে চান? আপলোড শুরু হলে ডাটা নিরাপদে সংরক্ষিত হবে।" 
+                  : "Are you sure you want to upload this file? Your transfer will be processed securely."}
+              </p>
+            </div>
+
+            <div className="flex gap-3 w-full mt-1">
+              <button
+                onClick={() => setShowUploadConfirm(false)}
+                className={`flex-1 py-3 px-4 rounded-xl text-xs font-bold uppercase tracking-wider cursor-pointer border transition-all ${
+                  theme === "dark" 
+                    ? "border-slate-800 text-slate-300 hover:bg-slate-850" 
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                {language === "bn" ? "না" : "No"}
+              </button>
+              
+              <button
+                onClick={() => {
+                  setShowUploadConfirm(false);
+                  confirmAndUploadFile();
+                }}
+                className="flex-1 py-3 px-4 rounded-xl text-xs font-bold uppercase tracking-wider cursor-pointer text-white bg-blue-600 hover:bg-blue-700 transition-all flex items-center justify-center shadow-lg shadow-blue-600/20"
+              >
+                {language === "bn" ? "হ্যাঁ, আপলোড করুন" : "Yes, Upload"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Real-time Dynamic Upload Progress Modal */}
+      {isUploading && (
+        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 z-[60] animate-fade-in" id="upload-progress-modal">
+          <div className={`rounded-3xl p-6 sm:p-8 max-w-md w-full mx-auto relative shadow-2xl flex flex-col items-center text-center gap-6 transition-colors duration-300 ${theme === "dark" ? "bg-slate-900 border border-slate-800 shadow-black/80 text-white" : "bg-white border border-slate-150 text-slate-900 shadow-slate-350/20"}`}>
+            
+            {/* Circular Progress Meter */}
+            <div className="relative flex items-center justify-center h-20 w-20">
+              <svg className="w-full h-full transform -rotate-90">
+                <circle
+                  cx="40"
+                  cy="40"
+                  r="34"
+                  className={`${theme === 'dark' ? 'stroke-slate-800' : 'stroke-slate-100'}`}
+                  strokeWidth="6"
+                  fill="transparent"
+                />
+                <circle
+                  cx="40"
+                  cy="40"
+                  r="34"
+                  className="stroke-blue-500 transition-all duration-300 ease-out"
+                  strokeWidth="6"
+                  fill="transparent"
+                  strokeDasharray={2 * Math.PI * 34}
+                  strokeDashoffset={2 * Math.PI * 34 * (1 - uploadProgress / 100)}
+                />
+              </svg>
+              <div className="absolute inset-0 flex items-center justify-center flex-col">
+                <span className="text-sm font-black font-mono tracking-tighter text-blue-500">
+                  {uploadProgress}%
+                </span>
+                <span className="text-[7.5px] uppercase font-bold text-slate-400 dark:text-slate-550 -mt-0.5">
+                  {language === "bn" ? "সম্পন্ন" : "Done"}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5 w-full">
+              <span className="text-[10px] font-bold text-blue-500 uppercase tracking-widest font-mono flex items-center justify-center gap-1.5">
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-ping" />
+                {language === "bn" ? "মেমোরি চ্যানেলে আপলোড হচ্ছে..." : "Streaming Upload Process..."}
+              </span>
+              <h3 className="text-sm font-black tracking-tight max-w-full truncate px-4 mt-1" title={uploadingFileName}>
+                {uploadingFileName}
+              </h3>
+            </div>
+
+            {/* Linear Progress Bar and remaining metrics */}
+            <div className="w-full flex flex-col gap-2">
+              <div className={`w-full h-2 rounded-full overflow-hidden transition-all duration-300 ${theme === "dark" ? "bg-slate-950" : "bg-slate-100"}`}>
+                <div 
+                  className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-600 transition-all duration-150"
+                  style={{ width: `${uploadProgress}%` }}
+                />
+              </div>
+
+              {/* Realtime percentages remaining/uploaded calculation */}
+              <div className="flex justify-between items-center text-[10.5px] font-mono mt-1 font-bold">
+                <div className="flex flex-col items-start gap-0.5 font-sans">
+                  <span className="text-slate-400 text-[9px] uppercase tracking-wider font-semibold">{language === "bn" ? "আপলোড হয়েছে" : "Uploaded Percentage"}</span>
+                  <span className="text-blue-500">{uploadProgress}%</span>
+                </div>
+                <div className="flex flex-col items-end gap-0.5 font-sans">
+                  <span className="text-slate-400 text-[9px] uppercase tracking-wider font-semibold">{language === "bn" ? "বাকি আছে" : "Percentage Remaining"}</span>
+                  <span className="text-indigo-500">{100 - uploadProgress}%</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Hint message */}
+            <p className="text-[10px] text-slate-450 dark:text-slate-500 leading-relaxed max-w-xs border-t pt-4 border-slate-100 dark:border-slate-800/60 font-medium">
+              {language === "bn"
+                ? "* আপলোড সম্পন্ন না হওয়া পর্যন্ত দয়া করে ব্রাউজার পেইজটি বন্ধ বা রিফ্রেশ করবেন না।"
+                : "* Please do not close or reload the browser session tab until the memory upload completes successfully."}
+            </p>
           </div>
         </div>
       )}

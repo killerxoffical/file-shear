@@ -494,6 +494,51 @@ app.post("/api/chat/:roomId/react", (req, res) => {
   res.json({ success: true, messages: room.messages });
 });
 
+// API: Delete Chat message in a specific room
+app.post("/api/chat/:roomId/delete", (req, res) => {
+  const { roomId } = req.params;
+  const room = rooms[roomId];
+
+  if (!room) {
+    return res.status(404).json({ error: "Room not found or expired." });
+  }
+
+  // Passcode verification
+  const clientPasscode = req.headers["x-room-passcode"] || req.query.passcode;
+  if (room.passcode && room.passcode !== clientPasscode) {
+    return res.status(401).json({ error: "Incorrect room passcode." });
+  }
+
+  const { messageId, senderId } = req.body;
+  if (!messageId || !senderId) {
+    return res.status(400).json({ error: "Missing required fields." });
+  }
+
+  if (!room.messages) {
+    room.messages = [];
+  }
+
+  const messageIndex = room.messages.findIndex((m) => m.id === messageId);
+  if (messageIndex === -1) {
+    return res.status(404).json({ error: "Message not found." });
+  }
+
+  const message = room.messages[messageIndex];
+  
+  // Authorization check: Is room owner? OR is message sender?
+  const isRoomOwner = !!(room.ownerId && room.ownerId === senderId);
+  const isMessageSender = message.senderId === senderId;
+
+  if (!isRoomOwner && !isMessageSender) {
+    return res.status(403).json({ error: "Unauthorized to delete this message." });
+  }
+
+  // Delete message
+  room.messages.splice(messageIndex, 1);
+
+  res.json({ success: true, messages: room.messages });
+});
+
 // API: Download file
 app.get("/api/download/:roomId/:fileId", (req, res) => {
   const { roomId, fileId } = req.params;
