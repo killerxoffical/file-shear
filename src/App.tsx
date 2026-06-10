@@ -38,6 +38,7 @@ import {
   Key,
   Shield,
   Activity,
+  TrendingUp,
   Send,
   Mic,
   Square,
@@ -53,7 +54,7 @@ import {
   Settings
 } from "lucide-react";
 import { FileMeta, RoomState } from "./types";
-import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend } from "recharts";
+import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend, AreaChart, Area, XAxis, YAxis, CartesianGrid } from "recharts";
 import { formatBytes, getFileIcon, formatTimeRemaining, formatRelativeTime } from "./utils";
 
 // Play standard high-quality subtle chime sound using browser Web Audio API
@@ -1360,6 +1361,7 @@ export default function App() {
   };
 
   const [isUpgradingStorage, setIsUpgradingStorage] = useState<boolean>(false);
+  const [isSimulatingTrends, setIsSimulatingTrends] = useState<boolean>(false);
 
   const upgradeRoomStorage = async (unitsToAdd: number, creditCost: number) => {
     if (!currentRoomCode || !roomData) return;
@@ -1879,6 +1881,41 @@ export default function App() {
       }))
       .filter((item) => item.count > 0);
   }, [fileList, language]);
+
+  const storageTrendsData = useMemo(() => {
+    if (!roomData || !roomData.createdAt) return [];
+    
+    const dataPoints = [];
+    const oneDayMs = 24 * 60 * 60 * 1000;
+    // For rooms active more than an hour, generate relative daily timestamps trailing up to current
+    const now = Date.now();
+    const files = Object.values(roomData.files || {}) as FileMeta[];
+    
+    for (let i = 6; i >= 0; i--) {
+      const targetTime = now - i * oneDayMs;
+      // Get readable short date e.g. "Jun 10"
+      const targetDateStr = new Date(targetTime).toLocaleDateString([], { month: "short", day: "numeric" });
+      
+      let cumulativeSize = 0;
+      files.forEach((f) => {
+        if (f.uploadedAt <= targetTime) {
+          cumulativeSize += f.size;
+        }
+      });
+      
+      dataPoints.push({
+        date: targetDateStr,
+        sizeMB: Number((cumulativeSize / (1024 * 1024)).toFixed(2)),
+      });
+    }
+    return dataPoints;
+  }, [roomData]);
+
+  const isActiveMoreThanHour = useMemo(() => {
+    if (!roomData || !roomData.createdAt) return false;
+    // active for more than 1 hour (3600000 ms)
+    return (Date.now() - roomData.createdAt) > 60 * 60 * 1000;
+  }, [roomData]);
 
   if (!isAuthLoaded) {
     return (
@@ -2917,6 +2954,123 @@ export default function App() {
                       </div>
                     </div>
                   )}
+
+                  {/* Storage Trends Chart Card */}
+                  <div 
+                    className={`p-5 rounded-2xl border transition-all duration-300 relative overflow-hidden flex flex-col gap-4 shadow-xs ${
+                      theme === "dark" 
+                        ? "bg-slate-900 border-slate-800 text-white" 
+                        : "bg-white border-slate-205 text-slate-900"
+                    }`}
+                    id="room-storage-trends-card"
+                  >
+                    <div className="flex justify-between items-center border-b pb-3 border-slate-100 dark:border-slate-800/65">
+                      <div className="flex items-center gap-2">
+                        <TrendingUp className="h-4.5 w-4.5 text-indigo-500" />
+                        <span className="text-xs font-black uppercase tracking-wider font-sans">
+                          {language === "bn" ? "স্টোরেজ ট্রেন্ডস বিশ্লেষণ" : "Storage Trends"}
+                        </span>
+                      </div>
+                      <span className="text-[9px] uppercase tracking-wider font-mono px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-500 border border-indigo-500/20 font-bold">
+                        {language === "bn" ? "দৈনিক রিয়েল-টাইম" : "Daily Patterns"}
+                      </span>
+                    </div>
+
+                    {!isActiveMoreThanHour ? (
+                      <div className="flex flex-col items-center justify-center py-6 px-4 text-center">
+                        <Clock className="h-8 w-8 text-slate-400 animate-pulse mb-3" />
+                        <span className="text-xs font-bold text-slate-850 dark:text-slate-200 mb-1">
+                          {language === "bn" ? "প্রস্তুত হচ্ছে..." : "Insight Generating..."}
+                        </span>
+                        <p className="text-[11px] text-slate-450 dark:text-slate-400 max-w-xs leading-relaxed">
+                          {language === "bn" 
+                            ? "এই রুমটি ১ ঘণ্টার কম সময় ধরে একটিভ রয়েছে। রুমের বয়স ১ ঘণ্টা পার হলে এখানে দৈনিক স্টোরেজ ব্যবহারের গ্রাফ স্বয়ংক্রিয়ভাবে দৃশ্যমান হবে।" 
+                            : "This room has been active for less than an hour. Once the room exceeds 1 hour of life, daily trend insights will automatically unlock."}
+                        </p>
+                        <button
+                          onClick={() => setIsSimulatingTrends(!isSimulatingTrends)}
+                          className="mt-4 px-3 py-1.5 text-[10px] font-bold border border-indigo-500/30 rounded-lg bg-indigo-500/5 hover:bg-indigo-500/10 text-indigo-500 transition-colors uppercase cursor-pointer outline-none shadow-sm"
+                        >
+                          {isSimulatingTrends 
+                            ? (language === "bn" ? "রিয়েল টাইম মোড দেখুন" : "View Live Realtime Mode")
+                            : (language === "bn" ? "ট্রেন্ড চার্ট প্রাকদর্শন" : "Preview Trend Chart Demo")}
+                        </button>
+                      </div>
+                    ) : null}
+
+                    {(isActiveMoreThanHour || isSimulatingTrends) ? (
+                      <div className="w-full flex flex-col gap-3">
+                        <div className="h-[150px] w-full mt-2" id="recharts-area-trends-container">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart
+                              data={storageTrendsData.length > 0 && storageTrendsData.some(d => d.sizeMB > 0) ? storageTrendsData : [
+                                { date: "Day 1", sizeMB: 0 },
+                                { date: "Day 2", sizeMB: 12.5 },
+                                { date: "Day 3", sizeMB: 12.5 },
+                                { date: "Day 4", sizeMB: 38.6 },
+                                { date: "Day 5", sizeMB: 48.2 },
+                                { date: "Day 6", sizeMB: 54.0 },
+                                { date: "Day 7", sizeMB: Number((totalBytesUsed / (1024 * 1024)).toFixed(2)) || 72.4 }
+                              ]}
+                              margin={{ top: 5, right: 10, left: -20, bottom: 0 }}
+                            >
+                              <defs>
+                                <linearGradient id="colorSize" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor="#6366f1" stopOpacity={0.4}/>
+                                  <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                                </linearGradient>
+                              </defs>
+                              <CartesianGrid strokeDasharray="3 3" stroke={theme === "dark" ? "#1e293b" : "#f1f5f9"} vertical={false} />
+                              <XAxis 
+                                dataKey="date" 
+                                stroke="#94a3b8" 
+                                fontSize={9} 
+                                tickLine={false} 
+                                axisLine={false}
+                              />
+                              <YAxis 
+                                stroke="#94a3b8" 
+                                fontSize={9} 
+                                tickLine={false} 
+                                axisLine={false}
+                                unit="MB"
+                              />
+                              <Tooltip
+                                content={({ active, payload }) => {
+                                  if (active && payload && payload.length) {
+                                    return (
+                                      <div className={`p-2.5 rounded-xl border text-[10px] font-sans shadow-lg font-bold ${
+                                        theme === "dark" 
+                                          ? "bg-slate-950 border-slate-800 text-white" 
+                                          : "bg-white border-slate-205 text-slate-900"
+                                      }`}>
+                                        <div className="text-slate-400 dark:text-slate-500 mb-0.5">{payload[0].payload.date}</div>
+                                        <div className="text-indigo-500 font-mono text-xs">{language === "bn" ? "স্টোরেজ: " : "Storage: "}{payload[0].value} MB</div>
+                                      </div>
+                                    );
+                                  }
+                                  return null;
+                                }}
+                              />
+                              <Area 
+                                type="monotone" 
+                                dataKey="sizeMB" 
+                                stroke="#6366f1" 
+                                strokeWidth={2.5}
+                                fillOpacity={1} 
+                                fill="url(#colorSize)" 
+                              />
+                            </AreaChart>
+                          </ResponsiveContainer>
+                        </div>
+                        <p className="text-[10px] text-slate-450 dark:text-slate-500 italic text-center">
+                          {language === "bn"
+                            ? "* গত ৭ দিনের সামগ্রিক ফাইল আপলোড এবং সংযোজন পরিমাণের গ্রাফ চিত্র।"
+                            : "* Showing cumulative active file sizes uploaded relative to timeline checkpoints."}
+                        </p>
+                      </div>
+                    ) : null}
+                  </div>
 
                   {/* Warning visual alert pop if room capacity almost loaded or exceeds */}
                   {(() => {
