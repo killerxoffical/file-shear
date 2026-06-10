@@ -41,6 +41,7 @@ interface ChatMessage {
   content: string; // Base64 audio/image or text
   transcription?: string; // Additional transcription
   createdAt: number;
+  reactions?: Record<string, string[]>;
 }
 
 interface Room {
@@ -55,6 +56,7 @@ interface Room {
   ownerEmail?: string;
   ownerName?: string;
   roomType?: "share" | "coding";
+  storageLimitBytes?: number;
 }
 
 const rooms: Record<string, Room> = {};
@@ -187,6 +189,30 @@ app.post("/api/room/extend/:roomId", (req, res) => {
   res.json({ success: true, expiresAt: room.expiresAt });
 });
 
+// API: Upgrade room storage limit (increase room weight using credits)
+app.post("/api/room/upgrade/:roomId", (req, res) => {
+  const { roomId } = req.params;
+  const { storageUnitsToAdd } = req.body || {}; // units to add in dynamic storage capacity (MB)
+  
+  const room = rooms[roomId];
+  if (!room) {
+    return res.status(404).json({ error: "Active Room has expired or does not exist." });
+  }
+
+  const units = Number(storageUnitsToAdd) || 200; // default is 100 base + 100 bonus as a package of 200 units
+  if (!room.storageLimitBytes) {
+    room.storageLimitBytes = ROOM_STORAGE_LIMIT_BYTES;
+  }
+  
+  room.storageLimitBytes += units * 1024 * 1024;
+  
+  res.json({
+    success: true,
+    storageLimitBytes: room.storageLimitBytes,
+    message: `Room storage limit successfully upgraded by ${units} units! (New limit: ${room.storageLimitBytes / (1024 * 1024)}MB)`
+  });
+});
+
 // API: Verify if room exists and get its files
 app.get("/api/room/:roomId", (req, res) => {
   const { roomId } = req.params;
@@ -276,7 +302,7 @@ app.get("/api/room/:roomId", (req, res) => {
     hasPasscode: !!room.passcode,
     messages: room.messages || [],
     totalSizeUsed,
-    storageLimitBytes: ROOM_STORAGE_LIMIT_BYTES,
+    storageLimitBytes: room.storageLimitBytes || ROOM_STORAGE_LIMIT_BYTES,
     ownerId: room.ownerId,
     ownerEmail: room.ownerEmail,
     ownerName: room.ownerName,
@@ -314,14 +340,16 @@ app.post("/api/upload/:roomId", upload.single("file"), (req, res) => {
     return res.status(400).json({ error: "No file was uploaded." });
   }
 
-  // Verify total active storage capacity used in this room (100MB limit)
+  // Verify total active storage capacity used in this room
   const currentTotalSize = Object.values(room.files).reduce((acc, f) => acc + f.size, 0);
-  if (currentTotalSize + req.file.size > ROOM_STORAGE_LIMIT_BYTES) {
+  const currentLimit = room.storageLimitBytes || ROOM_STORAGE_LIMIT_BYTES;
+  if (currentTotalSize + req.file.size > currentLimit) {
     try {
       fs.unlinkSync(req.file.path);
     } catch (err) {}
+    const limitMB = Math.round(currentLimit / (1024 * 1024));
     return res.status(400).json({
-      error: "Room 100MB storage limit reached! Please delete some old files from this room to make space."
+      error: `Room ${limitMB}MB storage limit reached! Please delete some old files from this room to make space.`
     });
   }
 
@@ -410,6 +438,60 @@ app.post("/api/chat/:roomId", (req, res) => {
   }
 
   res.json({ success: true, message: newMessage });
+});
+
+// API: Toggle reaction on a Chat message in a specific room
+app.post("/api/chat/:roomId/react", (req, res) => {
+  const { roomId } = req.params;
+  const room = rooms[roomId];
+
+  if (!room) {
+    return res.status(404).json({ error: "Room not found or expired." });
+  }
+
+  // Passcode verification
+  const clientPasscode = req.headers["x-room-passcode"] || req.query.passcode;
+  if (room.passcode && room.passcode !== clientPasscode) {
+    return res.status(401).json({ error: "Incorrect room passcode." });
+  }
+
+  const { messageId, emoji, senderId } = req.body;
+  if (!messageId || !emoji || !senderId) {
+    return res.status(400).json({ error: "Missing required fields." });
+  }
+
+  if (!room.messages) {
+    room.messages = [];
+  }
+
+  const message = room.messages.find((m) => m.id === messageId);
+  if (!message) {
+    return res.status(404).json({ error: "Message not found." });
+  }
+
+  if (!message.reactions) {
+    message.reactions = {};
+  }
+
+  if (!message.reactions[emoji]) {
+    message.reactions[emoji] = [];
+  }
+
+  const userIndex = message.reactions[emoji].indexOf(senderId);
+  if (userIndex > -1) {
+    // Remove reaction if already present
+    message.reactions[emoji].splice(userIndex, 1);
+  } else {
+    // Add new reaction
+    message.reactions[emoji].push(senderId);
+  }
+
+  // Clean up key if no users left for this emoji
+  if (message.reactions[emoji].length === 0) {
+    delete message.reactions[emoji];
+  }
+
+  res.json({ success: true, messages: room.messages });
 });
 
 // API: Download file

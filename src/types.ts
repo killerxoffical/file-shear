@@ -19,6 +19,7 @@ export interface ChatMessage {
   content: string; // text, or base64 audio/image
   transcription?: string; // voice transcription
   createdAt: number;
+  reactions?: Record<string, string[]>;
 }
 
 export interface RoomState {

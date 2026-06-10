@@ -6,6 +6,10 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /test/{docId} {
+      allow read: if true;
+    }
+
     // Users collection: allow all reading and writing to prevent login/admin blockages
     match /users/{userId} {
       allow read, write: if true;

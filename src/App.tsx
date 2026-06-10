@@ -53,6 +53,7 @@ import {
   Settings
 } from "lucide-react";
 import { FileMeta, RoomState } from "./types";
+import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend } from "recharts";
 import { formatBytes, getFileIcon, formatTimeRemaining, formatRelativeTime } from "./utils";
 
 // Play standard high-quality subtle chime sound using browser Web Audio API
@@ -147,6 +148,7 @@ export default function App() {
 
   const [currentRoomCode, setCurrentRoomCode] = useState<string | null>(null);
   const [roomData, setRoomData] = useState<RoomState | null>(null);
+  const [isSyncActive, setIsSyncActive] = useState<boolean>(true);
 
   // Auth & Credit listener
   useEffect(() => {
@@ -184,12 +186,16 @@ export default function App() {
 
           // Real-time synchronization only for reading (NO writing here)
           unsubscribeCredits = onSnapshot(userRef, (docSnap) => {
+            setIsSyncActive(true);
             if (docSnap.exists()) {
               const data = docSnap.data();
               if (data.credits !== undefined) {
                 setCredits(data.credits);
               }
             }
+          }, (error) => {
+            console.error("Error on user credits snapshot:", error);
+            setIsSyncActive(false);
           });
         }).catch(err => console.error("Error reading user doc:", err));
       } else {
@@ -288,6 +294,7 @@ export default function App() {
 
     const docRef = doc(db, "liveCoding", currentRoomCode);
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      setIsSyncActive(true);
       if (docSnap.exists()) {
         const data = docSnap.data();
         setLiveLanguage(data.language || "javascript");
@@ -335,6 +342,7 @@ export default function App() {
       }
     }, (error) => {
       console.error("Error in liveCoding snapshot:", error);
+      setIsSyncActive(false);
     });
 
     return () => unsubscribe();
@@ -475,6 +483,62 @@ export default function App() {
       }
     };
   }, []);
+
+  // Toggle chat message reaction
+  const toggleReaction = async (messageId: string, emoji: string) => {
+    if (!currentRoomCode) return;
+
+    // Optimistic UI Update: locally toggle the reaction for instant feedback
+    if (roomData && roomData.messages) {
+      const updatedMessages = roomData.messages.map((m) => {
+        if (m.id !== messageId) return m;
+        const currentReactions = { ...(m.reactions || {}) };
+        const users = [...(currentReactions[emoji] || [])];
+        const userIdx = users.indexOf(sessionSenderId);
+        if (userIdx > -1) {
+          users.splice(userIdx, 1);
+        } else {
+          users.push(sessionSenderId);
+        }
+        if (users.length === 0) {
+          delete currentReactions[emoji];
+        } else {
+          currentReactions[emoji] = users;
+        }
+        return { ...m, reactions: currentReactions };
+      });
+      setRoomData({ ...roomData, messages: updatedMessages });
+    }
+
+    try {
+      const response = await fetch(`/api/chat/${currentRoomCode}/react`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-room-passcode": currentPasscode || "",
+        },
+        body: JSON.stringify({
+          messageId,
+          emoji,
+          senderId: sessionSenderId,
+        }),
+      });
+
+      if (response.ok) {
+        const json = await response.json();
+        if (json.success && json.messages && roomData) {
+          setRoomData({ ...roomData, messages: json.messages });
+        }
+      } else {
+        const err = await response.json().catch(() => ({}));
+        showStatus(err.error || "Failed to update reaction.", "error");
+        fetchRoomInfo(currentRoomCode, true);
+      }
+    } catch (e) {
+      showStatus("Connection error updating reaction.", "error");
+      fetchRoomInfo(currentRoomCode, true);
+    }
+  };
 
   // Live Chat Delivery integration endpoint Caller
   const sendChatMessage = async (type: "text" | "voice" | "image" | "file_request" = "text", customContent?: string, extraData?: any) => {
@@ -679,6 +743,25 @@ export default function App() {
     return () => clearInterval(clock);
   }, []);
 
+  // Listen to browser network online/offline events for connection status
+  useEffect(() => {
+    const handleOnline = () => setIsSyncActive(true);
+    const handleOffline = () => setIsSyncActive(false);
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    // Sync initial online status
+    if (!navigator.onLine) {
+      setIsSyncActive(false);
+    }
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
   // Generate QR code dynamically when room changes
   useEffect(() => {
     if (currentRoomCode) {
@@ -874,6 +957,7 @@ export default function App() {
       const data = await response.json();
       setRoomData(data);
       setRoomError(null);
+      setIsSyncActive(true);
       
       if (passcodeToSend) {
         setCurrentPasscode(passcodeToSend);
@@ -883,6 +967,7 @@ export default function App() {
       return true;
     } catch (err: any) {
       console.error(err);
+      setIsSyncActive(false);
       if (!isSilent) {
         setRoomError(err.message || "Failed to fetch room files.");
         setCurrentRoomCode(null);
@@ -1274,6 +1359,66 @@ export default function App() {
     }
   };
 
+  const [isUpgradingStorage, setIsUpgradingStorage] = useState<boolean>(false);
+
+  const upgradeRoomStorage = async (unitsToAdd: number, creditCost: number) => {
+    if (!currentRoomCode || !roomData) return;
+    if (credits === null || credits < creditCost) {
+      showStatus(
+        language === "bn"
+          ? `পর্যাপ্ত কয়েন নেই! রুমের সাইজ বাড়ানোর জন্য ${creditCost}টি কয়েন প্রয়োজন।`
+          : `Not enough credits! Upgrading storage costs ${creditCost} credits.`,
+        "error"
+      );
+      return;
+    }
+    setIsUpgradingStorage(true);
+    try {
+      if (currentUser) {
+        await updateDoc(doc(db, "users", currentUser.uid), { credits: credits - creditCost });
+      }
+      const res = await fetch(`/api/room/upgrade/${currentRoomCode}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-room-passcode": currentPasscode
+        },
+        body: JSON.stringify({ storageUnitsToAdd: unitsToAdd })
+      });
+      const json = await res.json();
+      if (json.success && roomData) {
+        setRoomData({ ...roomData, storageLimitBytes: json.storageLimitBytes });
+        showStatus(
+          language === "bn"
+            ? `রুমের স্টোরেজ সীমা ${unitsToAdd}MB বৃদ্ধি করা হয়েছে! (-${creditCost} কয়েন)`
+            : `Room storage upgraded by ${unitsToAdd} MB successfully! (-${creditCost} credits)`,
+          "success"
+        );
+      } else {
+        if (currentUser) {
+          await updateDoc(doc(db, "users", currentUser.uid), { credits: credits });
+        }
+        showStatus(
+          language === "bn" ? "আপগ্রেড ব্যর্থ হয়েছে।" : "Upgrade failed.",
+          "error"
+        );
+      }
+    } catch (err: any) {
+      console.error(err);
+      if (currentUser) {
+        try {
+          await updateDoc(doc(db, "users", currentUser.uid), { credits: credits });
+        } catch (e) {}
+      }
+      showStatus(
+        language === "bn" ? "আপগ্রেড ব্যর্থ হয়েছে।" : "Upgrade failed.",
+        "error"
+      );
+    } finally {
+      setIsUpgradingStorage(false);
+    }
+  };
+
   const toggleScannerTorch = async () => {
     if (!scannerInstanceRef.current) return;
     const nextTorchState = !isTorchOn;
@@ -1323,7 +1468,7 @@ export default function App() {
     if (!files || files.length === 0 || !currentRoomCode) return;
     
     const MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024;
-    const ROOM_MAX_SIZE = 100 * 1024 * 1024;
+    const currentLimit = roomData?.storageLimitBytes || 100 * 1024 * 1024;
     const fileArray = Array.from(files);
     let totalNewSize = 0;
 
@@ -1340,11 +1485,12 @@ export default function App() {
       totalNewSize += f.size;
     }
 
-    if (totalBytesUsed + totalNewSize > ROOM_MAX_SIZE) {
+    if (totalBytesUsed + totalNewSize > currentLimit) {
+      const limitMB = Math.round(currentLimit / (1024 * 1024));
       showStatus(
         language === "bn"
-          ? "রুমের স্টোরেজ ফুল! সর্বোচ্চ ১০০ মেগাবাইট (100MB) লিমিট রয়েছে।"
-          : "Declined! Total files exceed remaining room quota (100MB capacity limit).",
+          ? `রুমের স্টোরেজ ফুল! সর্বোচ্চ ${limitMB} মেগাবাইট (${limitMB}MB) লিমিট রয়েছে।`
+          : `Declined! Total files exceed remaining room quota (${limitMB}MB capacity limit).`,
         "error"
       );
       return;
@@ -1682,6 +1828,58 @@ export default function App() {
   const maxBytes = 10 * 1024 * 1024 * 1024; // 10GB
   const bufferPercentage = Math.min(100, (totalBytesUsed / maxBytes) * 100);
 
+  const storageDistribution = useMemo(() => {
+    const categories: Record<string, { size: number; count: number; color: string; bg: string; nameEn: string; nameBn: string }> = {
+      image: { size: 0, count: 0, color: "#3b82f6", bg: "bg-blue-500", nameEn: "Images", nameBn: "ছবি" },
+      video: { size: 0, count: 0, color: "#a855f7", bg: "bg-purple-500", nameEn: "Videos", nameBn: "ভিডিও" },
+      audio: { size: 0, count: 0, color: "#10b981", bg: "bg-emerald-500", nameEn: "Audio", nameBn: "অডিও" },
+      document: { size: 0, count: 0, color: "#f59e0b", bg: "bg-amber-500", nameEn: "Documents", nameBn: "ডকুমেন্টস" },
+      archive: { size: 0, count: 0, color: "#ec4899", bg: "bg-pink-500", nameEn: "Archives", nameBn: "আর্কাইভ" },
+      other: { size: 0, count: 0, color: "#64748b", bg: "bg-slate-500", nameEn: "Others", nameBn: "অন্যান্য" },
+    };
+
+    fileList.forEach((file) => {
+      const mime = (file.mimeType || "").toLowerCase();
+      const ext = (file.name || "").split(".").pop()?.toLowerCase() || "";
+
+      if (mime.startsWith("image/") || ["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp"].includes(ext)) {
+        categories.image.size += file.size;
+        categories.image.count += 1;
+      } else if (mime.startsWith("video/") || ["mp4", "mkv", "avi", "mov", "webm", "wmv", "3gp"].includes(ext)) {
+        categories.video.size += file.size;
+        categories.video.count += 1;
+      } else if (mime.startsWith("audio/") || ["mp3", "wav", "m4a", "ogg", "aac", "flac"].includes(ext)) {
+        categories.audio.size += file.size;
+        categories.audio.count += 1;
+      } else if (
+        mime === "application/pdf" ||
+        mime.startsWith("text/") ||
+        ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "json", "md", "html", "css", "js", "ts", "xml"].includes(ext)
+      ) {
+        categories.document.size += file.size;
+        categories.document.count += 1;
+      } else if (["zip", "rar", "7z", "tar", "gz", "bz2", "xz"].includes(ext)) {
+        categories.archive.size += file.size;
+        categories.archive.count += 1;
+      } else {
+        categories.other.size += file.size;
+        categories.other.count += 1;
+      }
+    });
+
+    return Object.entries(categories)
+      .map(([key, value]) => ({
+        key,
+        name: language === "bn" ? value.nameBn : value.nameEn,
+        value: value.size,
+        formattedSize: formatBytes(value.size),
+        count: value.count,
+        color: value.color,
+        bg: value.bg,
+      }))
+      .filter((item) => item.count > 0);
+  }, [fileList, language]);
+
   if (!isAuthLoaded) {
     return (
       <div className={`flex h-screen items-center justify-center ${theme === "dark" ? "bg-slate-950 text-white" : "bg-white text-slate-900"}`}>
@@ -1991,6 +2189,46 @@ export default function App() {
               <span className="hidden sm:inline-flex px-3 py-1 bg-blue-50 text-blue-600 text-[10px] font-bold rounded-full uppercase tracking-wider animate-pulse border border-blue-100">
                 Secure Tunnel Active
               </span>
+            ) : null}
+
+            {/* Real-time Connection Status Indicator */}
+            {currentRoomCode ? (
+              <div 
+                className={`inline-flex items-center gap-1.5 px-3 py-1 text-[10px] font-extrabold rounded-full uppercase tracking-wider border transition-all select-none ${
+                  isSyncActive 
+                    ? (theme === "dark" 
+                        ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/25" 
+                        : "bg-emerald-50 text-emerald-600 border-emerald-150") 
+                    : (theme === "dark" 
+                        ? "bg-rose-500/10 text-rose-400 border-rose-500/25 animate-pulse" 
+                        : "bg-rose-50 text-rose-600 border-rose-150 animate-pulse")
+                }`}
+                title={
+                  isSyncActive 
+                    ? (language === "bn" ? "রিয়েল-টাইম ক্লাউড সিঙ্ক সক্রিয়" : "Real-time sync active and connected") 
+                    : (language === "bn" ? "সিঙ্ক বিচ্ছিন্ন! আপনার স্থানীয় ডেটা আউট-অফ-সিঙ্ক হতে পারে।" : "Sync interrupted! Local room data may be out of sync.")
+                }
+                id="connection-status-indicator"
+              >
+                <span className="relative flex h-1.5 w-1.5 shrink-0">
+                  {isSyncActive ? (
+                    <>
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-rose-500"></span>
+                    </>
+                  )}
+                </span>
+                <span>
+                  {isSyncActive 
+                    ? (language === "bn" ? "কানেক্টেড" : "Live Sync") 
+                    : (language === "bn" ? "অসংযুক্ত" : "Offline / Out-of-sync")}
+                </span>
+              </div>
             ) : null}
 
             {/* Mobile back button when in a room */}
@@ -2448,97 +2686,277 @@ export default function App() {
 
                   {/* Left segment content: File Operations and Quas (no tab needed) */}
                       {/* High Resolution Storage Quota Progress Card */}
-                  <div className={`p-5 rounded-2xl border transition-all duration-300 relative overflow-hidden flex flex-col gap-3 shadow-xs ${
-                    theme === "dark" 
-                      ? "bg-slate-900 border-slate-800 text-white" 
-                      : "bg-white border-slate-205 text-slate-900"
-                  }`}>
-                    {/* Glowing design background accent */}
-                    <div className="absolute top-0 right-0 h-24 w-24 bg-gradient-to-br from-blue-500/10 to-transparent blur-xl pointer-events-none" />
-                    
-                    <div className="flex justify-between items-start">
-                      <div className="flex items-center gap-3">
-                        <div className={`p-2.5 rounded-xl border flex items-center justify-center ${
-                          theme === "dark" ? "bg-slate-950/50 border-slate-800" : "bg-blue-50 border-blue-100"
-                        }`}>
-                          <HardDrive className={`h-5 w-5 ${totalBytesUsed > 80 * 1024 * 1024 ? "text-rose-500 animate-bounce" : "text-blue-500"}`} />
+                  {(() => {
+                    const currentLimit = roomData?.storageLimitBytes || 100 * 1024 * 1024;
+                    const limitMB = currentLimit / (1024 * 1024);
+                    return (
+                      <div className={`p-5 rounded-2xl border transition-all duration-300 relative overflow-hidden flex flex-col gap-3 shadow-xs ${
+                        theme === "dark" 
+                          ? "bg-slate-900 border-slate-800 text-white" 
+                          : "bg-white border-slate-205 text-slate-900"
+                      }`}>
+                        {/* Glowing design background accent */}
+                        <div className="absolute top-0 right-0 h-24 w-24 bg-gradient-to-br from-blue-500/10 to-transparent blur-xl pointer-events-none" />
+                        
+                        <div className="flex justify-between items-start">
+                          <div className="flex items-center gap-3">
+                            <div className={`p-2.5 rounded-xl border flex items-center justify-center ${
+                              theme === "dark" ? "bg-slate-950/50 border-slate-800" : "bg-blue-50 border-blue-100"
+                            }`}>
+                              <HardDrive className={`h-5 w-5 ${totalBytesUsed > currentLimit * 0.8 ? "text-rose-500 animate-bounce" : "text-blue-500"}`} />
+                            </div>
+                            <div className="flex flex-col text-left">
+                              <span className="text-[10px] font-bold tracking-widest font-mono text-slate-400 uppercase">
+                                {language === "bn" ? "রুম মেমোরি স্টোরেজ" : "Active Session Storage"}
+                              </span>
+                              <span className="text-sm font-black tracking-tight mt-0.5">
+                                {language === "bn" ? `${limitMB} মেগাবাইট সর্বোচ্চ সীমা` : `${limitMB} MB Maximum Capacity`}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Percent Pill indicator */}
+                          <span className={`px-2 py-0.5 rounded-md font-mono text-[10px] font-bold border ${
+                            totalBytesUsed >= currentLimit * 0.9 
+                              ? "bg-rose-950/40 text-rose-450 border-rose-800/50 animate-pulse" 
+                              : theme === "dark"
+                              ? "bg-blue-950/40 text-blue-400 border-blue-900/40"
+                              : "bg-blue-50 text-blue-700 border-blue-105"
+                          }`}>
+                            {Math.min(100, Math.round((totalBytesUsed / currentLimit) * 100))}%
+                          </span>
                         </div>
-                        <div className="flex flex-col text-left">
-                          <span className="text-[10px] font-bold tracking-widest font-mono text-slate-400 uppercase">
-                            {language === "bn" ? "রুম মেমোরি স্টোরেজ" : "Active Session Storage"}
+
+                        {/* Progress slider bar gauge */}
+                        <div className={`w-full h-2 rounded-full overflow-hidden transition-all duration-300 ${theme === "dark" ? "bg-slate-950" : "bg-slate-100"}`}>
+                          <div 
+                            className={`h-full rounded-full transition-all duration-500 ease-out ${
+                              totalBytesUsed >= currentLimit * 0.9
+                                ? "bg-gradient-to-r from-rose-500 to-red-650"
+                                : totalBytesUsed >= currentLimit * 0.6
+                                ? "bg-gradient-to-r from-amber-500 to-amber-600"
+                                : "bg-gradient-to-r from-blue-500 to-blue-600"
+                            }`}
+                            style={{ width: `${Math.max(1, Math.min(100, (totalBytesUsed / currentLimit) * 100))}%` }}
+                          />
+                        </div>
+
+                        {/* Meta info sizes */}
+                        <div className="flex justify-between items-center text-[10px] font-mono text-slate-550 pt-0.5 border-b pb-3 border-slate-100 dark:border-slate-850">
+                          <span>{language === "bn" ? "ব্যবহার হয়েছে" : "Allocated"}: <strong className={`${theme === "dark" ? "text-slate-200" : "text-slate-800"}`}>{formatBytes(totalBytesUsed)}</strong></span>
+                          <span>{language === "bn" ? "বাকি আছে" : "Remaining Space"}: <strong className={`${totalBytesUsed >= currentLimit * 0.9 ? "text-rose-500" : (theme === "dark" ? "text-slate-200" : "text-slate-800")}`}>{formatBytes(Math.max(0, currentLimit - totalBytesUsed))}</strong></span>
+                        </div>
+
+                        {/* UPGRADE CAPACITY CONTROLLERS */}
+                        <div className="flex flex-col gap-2.5 pt-1.5 text-left">
+                          <span className="text-[10px] font-sans font-black text-blue-500 uppercase tracking-widest flex items-center gap-1.5">
+                            <Zap className="h-3 w-3 fill-blue-500/10" />
+                            {language === "bn" ? "স্পেস বর্ধিতকরণ ও আপগ্রেড" : "Expand Room Capacity"}
                           </span>
-                          <span className="text-sm font-black tracking-tight mt-0.5">
-                            {language === "bn" ? "১০০ মেগাবাইট সর্বোচ্চ সীমা" : "100 MB Maximum Capacity"}
-                          </span>
+                          
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-0.5">
+                            {/* Standard package */}
+                            <button
+                              disabled={isUpgradingStorage}
+                              onClick={() => upgradeRoomStorage(200, 1000)}
+                              className={`p-3 border rounded-xl flex flex-col justify-start text-left relative overflow-hidden transition-all group cursor-pointer hover:border-amber-500/50 disabled:opacity-50 select-none ${
+                                theme === "dark" 
+                                  ? "bg-slate-950/40 border-slate-850 hover:bg-slate-950/60" 
+                                  : "bg-slate-50 border-slate-200 hover:bg-slate-100/50"
+                              }`}
+                            >
+                              <div className="flex justify-between items-center w-full mb-1">
+                                <span className="text-[11px] font-bold tracking-tight text-slate-900 dark:text-white group-hover:text-amber-500 transition-colors">
+                                  {language === "bn" ? "+২০০ মেগাবাইট প্যাকেজ" : "+200 MB Power Package"}
+                                </span>
+                                <span className="text-[10px] font-mono font-black text-amber-500 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                                  1,000 Cr.
+                                </span>
+                              </div>
+                              <span className="text-[10.5px] leading-relaxed text-slate-450 dark:text-slate-400 mt-0.5">
+                                {language === "bn"
+                                  ? "১,০০০ কয়েনের বিনিময়ে ১০০ ইউনিটের সাথে আরও অতিরিক্ত ১০০ ইউনিট স্টোরেজ স্পেস বোনাস পাবেন!"
+                                  : "Get 100 storage units for 1,000 credits, with an additional 100 storage units available as bonus!"}
+                              </span>
+                            </button>
+
+                            {/* Incremental 100 unit package if needed */}
+                            <button
+                              disabled={isUpgradingStorage}
+                              onClick={() => upgradeRoomStorage(100, 500)}
+                              className={`p-3 border rounded-xl flex flex-col justify-start text-left relative overflow-hidden transition-all group cursor-pointer hover:border-blue-500/50 disabled:opacity-50 select-none ${
+                                theme === "dark" 
+                                  ? "bg-slate-950/40 border-slate-850 hover:bg-slate-950/60" 
+                                  : "bg-slate-50 border-slate-200 hover:bg-slate-100/50"
+                              }`}
+                            >
+                              <div className="flex justify-between items-center w-full mb-1">
+                                <span className="text-[11px] font-bold tracking-tight text-slate-900 dark:text-white group-hover:text-blue-500 transition-colors">
+                                  {language === "bn" ? "+১০০ মেগাবাইট বুস্টার" : "+100 MB Capacity Boost"}
+                                </span>
+                                <span className="text-[10px] font-mono font-black text-blue-500 bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/20">
+                                  500 Cr.
+                                </span>
+                              </div>
+                              <span className="text-[10.5px] leading-relaxed text-slate-450 dark:text-slate-400 mt-0.5">
+                                {language === "bn"
+                                  ? "৫০০ কয়েনের বিনিময়ে চ্যাট স্টোরেজ ১০০ মেগাবাইট বাড়িয়ে নিন নিখুঁত ট্রান্সফার গ্যারান্টি সহ।"
+                                  : "Enable dynamic upgrades by increasing chat room memory by 100 units for credits."}
+                              </span>
+                            </button>
+                          </div>
                         </div>
                       </div>
+                    );
+                  })()}
 
-                      {/* Percent Pill indicator */}
-                      <span className={`px-2 py-0.5 rounded-md font-mono text-[10px] font-bold border ${
-                        totalBytesUsed >= 90 * 1024 * 1024 
-                          ? "bg-rose-950/40 text-rose-450 border-rose-800/50 animate-pulse" 
-                          : theme === "dark"
-                          ? "bg-blue-950/40 text-blue-400 border-blue-900/40"
-                          : "bg-blue-50 text-blue-700 border-blue-105"
-                      }`}>
-                        {Math.min(100, Math.round((totalBytesUsed / (100 * 1024 * 1024)) * 100))}%
-                      </span>
-                    </div>
+                  {/* Storage Distribution Visual Chart Card */}
+                  {fileList.length > 0 && (
+                    <div 
+                      className={`p-5 rounded-2xl border transition-all duration-300 relative overflow-hidden flex flex-col gap-4 shadow-xs ${
+                        theme === "dark" 
+                          ? "bg-slate-900 border-slate-800 text-white animate-none" 
+                          : "bg-white border-slate-205 text-slate-900"
+                      }`}
+                      id="room-storage-distribution-card"
+                    >
+                      <div className="flex justify-between items-center border-b pb-3 border-slate-100 dark:border-slate-800/65">
+                        <div className="flex items-center gap-2">
+                          <Activity className={`h-4.5 w-4.5 text-blue-500`} />
+                          <span className="text-xs font-black uppercase tracking-wider font-sans">
+                            {language === "bn" ? "ফাইল মেমোরি বিশ্লেষণ" : "Storage Distribution"}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-mono font-bold text-slate-400 dark:text-slate-550">
+                          {fileList.length} {fileList.length === 1 ? (language === "bn" ? "টি ফাইল" : "File") : (language === "bn" ? "টি ফাইলসমূহ" : "Files")}
+                        </span>
+                      </div>
 
-                    {/* Progress slider bar gauge */}
-                    <div className={`w-full h-2 rounded-full overflow-hidden transition-all duration-300 ${theme === "dark" ? "bg-slate-950" : "bg-slate-100"}`}>
-                      <div 
-                        className={`h-full rounded-full transition-all duration-500 ease-out ${
-                          totalBytesUsed >= 90 * 1024 * 1024
-                            ? "bg-gradient-to-r from-rose-500 to-red-650"
-                            : totalBytesUsed >= 60 * 1024 * 1024
-                            ? "bg-gradient-to-r from-amber-500 to-amber-600"
-                            : "bg-gradient-to-r from-blue-500 to-blue-600"
-                        }`}
-                        style={{ width: `${Math.max(1, Math.min(100, (totalBytesUsed / (100 * 1024 * 1024)) * 100))}%` }}
-                      />
-                    </div>
+                      <div className="flex flex-col sm:flex-row items-center gap-6 justify-center min-h-[160px]">
+                        {/* Left: Recharts Donut Chart */}
+                        <div className="w-[140px] h-[140px] flex items-center justify-center relative shrink-0" id="recharts-pie-container">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                              <Pie
+                                data={storageDistribution}
+                                cx="50%"
+                                cy="50%"
+                                innerRadius={42}
+                                outerRadius={55}
+                                paddingAngle={3}
+                                dataKey="value"
+                              >
+                                {storageDistribution.map((entry, index) => (
+                                  <Cell key={`cell-${index}`} fill={entry.color} />
+                                ))}
+                              </Pie>
+                              <Tooltip
+                                content={({ active, payload }) => {
+                                  if (active && payload && payload.length) {
+                                    const data = payload[0].payload;
+                                    return (
+                                      <div className={`p-2.5 rounded-xl border text-[10px] font-sans shadow-lg font-bold ${
+                                        theme === "dark" 
+                                          ? "bg-slate-950 border-slate-800 text-white" 
+                                          : "bg-white border-slate-200 text-slate-905"
+                                      }`}>
+                                        <div className="flex items-center gap-1.5 mb-1">
+                                          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: data.color }} />
+                                          <span className="text-slate-900 dark:text-slate-100 font-extrabold">{data.name}</span>
+                                        </div>
+                                        <div className="text-slate-500 dark:text-slate-405 font-mono">{language === "bn" ? "সাইজ: " : "Size: "}{data.formattedSize}</div>
+                                        <div className="text-slate-500 dark:text-slate-405 font-mono">{language === "bn" ? "টোটাল: " : "Count: "}{data.count}</div>
+                                      </div>
+                                    );
+                                  }
+                                  return null;
+                                }}
+                              />
+                            </PieChart>
+                          </ResponsiveContainer>
 
-                    {/* Meta info sizes */}
-                    <div className="flex justify-between items-center text-[10px] font-mono text-slate-550 pt-0.5">
-                      <span>{language === "bn" ? "ব্যবহার হয়েছে" : "Allocated"}: <strong className={`${theme === "dark" ? "text-slate-200" : "text-slate-800"}`}>{formatBytes(totalBytesUsed)}</strong></span>
-                      <span>{language === "bn" ? "বাকি আছে" : "Remaining Space"}: <strong className={`${totalBytesUsed >= 90 * 1024 * 1024 ? "text-rose-500" : (theme === "dark" ? "text-slate-200" : "text-slate-800")}`}>{formatBytes(Math.max(0, (100 * 1024 * 1024) - totalBytesUsed))}</strong></span>
-                    </div>
-                  </div>
-
-                  {/* Warning visual alert pop if room capacity almost loaded or exceeds */}
-                  {totalBytesUsed >= 90 * 1024 * 1024 && (
-                    <div className={`p-4 rounded-xl border flex flex-col gap-3 text-left animate-fade-in ${
-                      theme === "dark" 
-                        ? "bg-rose-950/40 border-rose-900/40 text-rose-300" 
-                        : "bg-rose-50 border-rose-150 text-rose-800"
-                    }`} id="storage-limit-warning-block">
-                      <div className="flex items-start gap-3">
-                        <AlertCircle className="h-5 w-5 text-rose-500 shrink-0 mt-0.5" />
-                        <div className="flex flex-col w-full">
-                          <div className="flex justify-between items-center w-full">
-                            <span className="font-bold text-xs">
-                              {language === "bn" ? "স্টোরেজ প্রায় সম্পূর্ণ!" : "Storage Space Warning!"}
+                          {/* Center floating stat label */}
+                          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none mt-1">
+                            <span className="text-xs font-mono font-black select-none leading-none">
+                              {formatBytes(totalBytesUsed)}
                             </span>
-                            <span className="text-[10px] font-mono font-bold text-rose-500">
-                              {Math.round((totalBytesUsed / (100 * 1024 * 1024)) * 100)}%
+                            <span className="text-[8px] text-slate-400 dark:text-slate-505 font-black uppercase tracking-wider scale-90 select-none mt-1">
+                              {language === "bn" ? "ব্যবহৃত" : "Allocated"}
                             </span>
                           </div>
-                          <span className="text-[11px] leading-relaxed mt-1 opacity-85 font-medium">
-                            {language === "bn" 
-                              ? "আপনার রুমের সর্বোচ্চ ১০০ মেগাবাইট সাইজ লিমিটের প্রায় সবটুকুই ব্যবহৃত হয়েছে। নতুন ফাইল পোস্ট বা আপলোড করতে হলে ডিলিট আইকনে ট্যাপ করে পুরাতন ডাটা রিমুভ করুন।" 
-                              : "Your 100MB temporary room capacity is nearing its limit. Please clean up older files to continue uploading."}
-                          </span>
                         </div>
-                      </div>
-                      <div className={`h-1.5 w-full rounded-full overflow-hidden ${theme === 'dark' ? 'bg-rose-900/50' : 'bg-rose-200'}`}>
-                        <div 
-                          className="h-full bg-rose-500 rounded-full transition-all duration-500"
-                          style={{ width: `${Math.min(100, (totalBytesUsed / (100 * 1024 * 1024)) * 100)}%` }}
-                        />
+
+                        {/* Right: Custom Legend List */}
+                        <div className="flex-1 flex flex-col gap-2 w-full text-left" id="storage-categories-legend">
+                          {storageDistribution.map((item, index) => (
+                            <div 
+                              key={item.key || index}
+                              className={`flex items-center justify-between p-2 rounded-xl transition-all border ${
+                                theme === "dark"
+                                  ? "bg-slate-950/30 border-slate-900/60 hover:border-slate-800"
+                                  : "bg-slate-50/50 border-slate-100 hover:border-slate-200"
+                              }`}
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
+                                <div className="flex flex-col min-w-0">
+                                  <span className="text-[11px] font-extrabold truncate text-slate-900 dark:text-slate-100 leading-tight">
+                                    {item.name}
+                                  </span>
+                                  <span className="text-[9px] text-slate-400 dark:text-slate-500 font-mono italic">
+                                    {item.count} {item.count === 1 ? (language === "bn" ? "ফাইল" : "file") : (language === "bn" ? "ফাইলসমূহ" : "files")}
+                                  </span>
+                                </div>
+                              </div>
+                              <span className="text-xs font-mono font-bold text-slate-600 dark:text-slate-350 shrink-0 ml-2">
+                                {item.formattedSize}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     </div>
                   )}
+
+                  {/* Warning visual alert pop if room capacity almost loaded or exceeds */}
+                  {(() => {
+                    const currentLimit = roomData?.storageLimitBytes || 100 * 1024 * 1024;
+                    const limitMB = currentLimit / (1024 * 1024);
+                    const percentUsed = Math.round((totalBytesUsed / currentLimit) * 100);
+                    if (totalBytesUsed < currentLimit * 0.9) return null;
+                    return (
+                      <div className={`p-4 rounded-xl border flex flex-col gap-3 text-left animate-fade-in ${
+                        theme === "dark" 
+                          ? "bg-rose-950/40 border-rose-900/40 text-rose-300" 
+                          : "bg-rose-50 border-rose-150 text-rose-800"
+                      }`} id="storage-limit-warning-block">
+                        <div className="flex items-start gap-3">
+                          <AlertCircle className="h-5 w-5 text-rose-500 shrink-0 mt-0.5" />
+                          <div className="flex flex-col w-full">
+                            <div className="flex justify-between items-center w-full">
+                              <span className="font-bold text-xs">
+                                {language === "bn" ? "স্টোরেজ প্রায় সম্পূর্ণ!" : "Storage Space Warning!"}
+                              </span>
+                              <span className="text-[10px] font-mono font-bold text-rose-500">
+                                {percentUsed}%
+                              </span>
+                            </div>
+                            <span className="text-[11px] leading-relaxed mt-1 opacity-85 font-medium">
+                              {language === "bn" 
+                                ? `আপনার রুমের সর্বোচ্চ ${limitMB} মেগাবাইট সাইজ লিমিটের প্রায় সবটুকুই ব্যবহৃত হয়েছে। নতুন ফাইল পোস্ট বা আপলোড করতে হলে ডিলিট আইকনে ট্যাপ করে পুরাতন ডাটা রিমুভ করুন।` 
+                                : `Your ${limitMB}MB temporary room capacity is nearing its limit. Please clean up older files to continue uploading.`}
+                            </span>
+                          </div>
+                        </div>
+                        <div className={`h-1.5 w-full rounded-full overflow-hidden ${theme === 'dark' ? 'bg-rose-900/50' : 'bg-rose-200'}`}>
+                          <div 
+                            className="h-full bg-rose-500 rounded-full transition-all duration-500"
+                            style={{ width: `${Math.min(100, percentUsed)}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })()}
                   
                   {/* Styled Drag & Drop Zone */}
                   <div 
@@ -2693,8 +3111,7 @@ export default function App() {
                                 exit={{ opacity: 0, scale: 0.96, height: 0, transition: { duration: 0.2 } }}
                                 transition={{ type: "spring", stiffness: 380, damping: 28 }}
                                 className={`px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 group transition-all text-left ${theme === "dark" ? "hover:bg-slate-850" : "hover:bg-slate-50/50"}`}
-                                id={`file-item-${file.id}`}
-                              >
+                                id={`file-item-${file.id}`}>
                                 <div className="flex items-start gap-3 min-w-0 flex-1">
                                   
                                   {/* Sleek File Label Box or Ambient Image Thumbnail preview */}
@@ -2717,8 +3134,8 @@ export default function App() {
                                   ) : (
                                     <div className={`h-11 w-11 rounded-lg flex items-center justify-center shrink-0 font-bold text-[10px] uppercase tracking-wider border transition-colors duration-300 ${
                                       theme === "dark" 
-                                        ? "bg-slate-800 border-slate-705 text-blue-400" 
-                                        : "bg-blue-50 border-blue-100 text-blue-600"
+                                        ? "bg-slate-850 border-slate-800 text-blue-400" 
+                                        : "bg-blue-50 border-blue-105 text-blue-600"
                                     }`}>
                                       {fileExt.substring(0, 3) || "RAW"}
                                     </div>
@@ -2726,14 +3143,14 @@ export default function App() {
 
                                   <div className="min-w-0 flex-1 flex flex-col font-sans">
                                     <span 
-                                      className={`font-bold truncate text-sm transition-colors cursor-pointer ${theme === "dark" ? "text-slate-100 hover:text-blue-400" : "text-slate-900 hover:text-blue-600"}`} 
+                                      className={`font-semibold truncate text-[13px] sm:text-sm transition-colors cursor-pointer ${theme === "dark" ? "text-slate-100 hover:text-blue-400" : "text-slate-950 hover:text-blue-650"}`} 
                                       title={file.name}
                                     >
                                       {file.name}
                                     </span>
                                     
                                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1 text-[10px] text-slate-450 font-medium">
-                                      <span className={`font-bold font-mono px-1 py-0.2 rounded text-slate-500 border ${theme === "dark" ? "bg-slate-950 border-slate-800" : "bg-slate-100 border-slate-200"}`}>
+                                      <span className={`font-bold font-mono px-1 py-0.2 rounded text-slate-500 border ${theme === "dark" ? "bg-slate-955 border-slate-850" : "bg-slate-100 border-slate-200"}`}>
                                         {formatBytes(file.size)}
                                       </span>
                                       <span>•</span>
@@ -2744,39 +3161,39 @@ export default function App() {
                                       {file.hasPasscode && (
                                         <>
                                           <span>•</span>
-                                          <span className="text-amber-600 font-bold bg-amber-500/10 dark:bg-amber-950/20 px-1.5 py-0.5 rounded text-[8px] uppercase border border-amber-200/40 flex items-center gap-0.5">
-                                            <Lock className="h-2 w-2 text-amber-500 stroke-[3]" />
+                                          <span className="text-amber-650 font-extrabold bg-amber-500/10 dark:bg-amber-955/20 px-1.5 py-0.5 rounded text-[8px] uppercase border border-amber-200/40 flex items-center gap-0.5">
+                                            <Lock className="h-2.5 w-2.5 text-amber-500 stroke-[3]" />
                                             <span>{language === "bn" ? "লক" : "Locked"}</span>
                                           </span>
-                                        </>
-                                      )}
+                                        </>)
+                                      }
 
                                       {file.maxDownloads && file.maxDownloads > 1 ? (
                                         <>
                                           <span>•</span>
-                                          <span className="text-blue-600 font-bold bg-blue-500/10 px-1.5 py-0.5 rounded text-[8px] uppercase border border-blue-200/40">
+                                          <span className="text-blue-650 font-bold bg-blue-500/10 px-1.5 py-0.5 rounded text-[8px] uppercase border border-blue-200/40">
                                             {language === "bn" ? `সীমা: ${file.downloadCount}/${file.maxDownloads}` : `Limit: ${file.downloadCount}/${file.maxDownloads}`}
                                           </span>
-                                        </>
-                                      ) : file.autoDelete ? (
+                                        </>)
+                                      : file.autoDelete ? (
                                         <>
                                           <span>•</span>
-                                          <span className="text-red-500 font-bold bg-red-500/10 px-1 py-0.2 rounded text-[9px] uppercase border border-red-200/40">
+                                          <span className="text-rose-500 font-bold bg-rose-500/10 px-1 py-0.2 rounded text-[9px] uppercase border border-rose-250/20">
                                             {language === "bn" ? "১ বার ডাউনলোড" : "1-Time"}
                                           </span>
-                                        </>
-                                      ) : null}
+                                        </>)
+                                      : null}
                                     </div>
                                   </div>
                                 </div>
 
                                 {/* Operations widget downloads */}
-                                <div className="flex flex-row sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-2 shrink-0 pt-2.5 sm:pt-0 border-t sm:border-t-0 border-slate-100">
+                                <div className="flex flex-row sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-2 shrink-0 pt-2.5 sm:pt-0 border-t sm:border-t-0 border-slate-100/5 dark:border-slate-850">
                                   
                                   {/* Countdown Expiry block label */}
                                   <div className="text-[10px] text-slate-500 flex items-center gap-1">
                                     <span className="text-slate-400">{text.expiryLabelShort[language]}</span>
-                                    <span className={`font-mono font-bold ${file.expiresAt - Date.now() < 5 * 60000 ? "text-rose-500 animate-pulse bg-rose-50 px-1.5 py-0.5 rounded" : "text-blue-600"}`}>
+                                    <span className={`font-mono font-bold ${file.expiresAt - Date.now() < 5 * 60000 ? "text-rose-500 animate-pulse bg-rose-500/10 px-1.5 py-0.5 rounded" : "text-blue-500 font-extrabold"}`}>
                                       {formatTimeRemaining(file.expiresAt)}
                                     </span>
                                   </div>
@@ -2786,7 +3203,7 @@ export default function App() {
                                     {/* Download file trigger link */}
                                     <button
                                       onClick={() => handleDownloadAction(file)}
-                                      className="flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 px-3 rounded text-[11px] transition-all shadow-sm shrink-0 cursor-pointer rounded-lg uppercase tracking-wide border border-blue-500"
+                                      className="flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 px-3 rounded-lg text-[11px] transition-all shadow-xs shrink-0 cursor-pointer uppercase tracking-wide border border-blue-500 active:scale-95"
                                       title="Download asset File"
                                       id={`download-btn-${file.id}`}
                                     >
@@ -2797,27 +3214,25 @@ export default function App() {
                                     {/* Copy Downloadable shared Link */}
                                     <button
                                       onClick={() => copyFileLink(file.id, file.hasPasscode)}
-                                      className={`p-1.5 rounded-lg transition-all cursor-pointer border ${theme === "dark" ? "text-slate-400 hover:text-blue-400 hover:bg-slate-900 border-slate-800" : "text-slate-500 hover:text-blue-600 hover:bg-slate-100 border-slate-200"}`}
+                                      className={`p-1.5 rounded-lg transition-all cursor-pointer border ${theme === "dark" ? "text-slate-400 hover:text-blue-400 hover:bg-slate-900 border-slate-800" : "text-slate-500 hover:text-blue-650 hover:bg-slate-100 border-slate-200"}`}
                                       title="Copy raw download link tool"
                                       id={`copy-file-btn-${file.id}`}
                                     >
-                                      {copiedFileId === file.id ? <Check className="h-3.5 w-3.5 text-emerald-600 font-extrabold" /> : <Copy className="h-3.5 w-3.5" />}
+                                      {copiedFileId === file.id ? <Check className="h-3.5 w-3.5 text-emerald-500 font-extrabold" /> : <Copy className="h-3.5 w-3.5" />}
                                     </button>
 
                                     {/* Immediate purge action */}
                                     <button
                                       onClick={() => deleteFile(file.id, file.name)}
-                                      className={`p-1.5 rounded-lg transition-all cursor-pointer border ${theme === "dark" ? "text-slate-400 hover:text-red-500 hover:bg-red-500/10 border-slate-800" : "text-slate-500 hover:text-red-500 hover:bg-red-50 border-slate-205"}`}
+                                      className={`p-1.5 rounded-lg transition-all cursor-pointer border ${theme === "dark" ? "text-slate-400 hover:text-red-500 hover:bg-red-500/10 border-slate-800" : "text-slate-500 hover:text-red-500 hover:bg-red-50 border-slate-150"}`}
                                       title="Delete immediately right now"
                                       id={`delete-btn-${file.id}`}
                                     >
-                                      <Trash2 className="h-3.5 w-3.5" />
+                                      <Trash2 className="h-3.5 w-3.5" strokeWidth={2} />
                                     </button>
-
                                   </div>
 
                                 </div>
-
                               </motion.div>
                             );
                           })}
@@ -2891,11 +3306,41 @@ export default function App() {
                       ) : (
                         roomData.messages.map((msg) => {
                           const isMe = msg.senderId === sessionSenderId;
+                          
                           return (
                             <div 
                               key={msg.id} 
-                              className={`flex flex-col max-w-[85%] text-left ${isMe ? "self-end items-end" : "self-start items-start"}`}
+                              className={`flex flex-col max-w-[85%] text-left ${isMe ? "self-end items-end" : "self-start items-start"} group relative`}
                             >
+                              {/* Hover Reaction trigger / Picker */}
+                              <div className={`absolute -top-3.5 z-15 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-all duration-200 ${
+                                isMe ? "right-1" : "left-1"
+                              }`}>
+                                <div className={`flex items-center gap-1 p-1 rounded-full border shadow-md ${
+                                  theme === "dark" 
+                                    ? "bg-slate-950 border-slate-800"
+                                    : "bg-white border-slate-200"
+                                }`}>
+                                  {["👍", "❤️", "😄", "😮", "😢", "🔥"].map((emoji) => {
+                                    const hasSelfReacted = msg.reactions?.[emoji]?.includes(sessionSenderId);
+                                    return (
+                                      <button
+                                        key={emoji}
+                                        onClick={() => toggleReaction(msg.id, emoji)}
+                                        className={`h-5 w-5 flex items-center justify-center text-xs rounded-full hover:scale-130 active:scale-95 transition-all ${
+                                          hasSelfReacted 
+                                            ? "bg-blue-500/10 scale-110" 
+                                            : "hover:bg-slate-500/10"
+                                        }`}
+                                        title={emoji}
+                                      >
+                                        {emoji}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+
                               {/* Sender title name */}
                               <span className="text-[9px] font-bold text-slate-400 mb-0.5 px-1 tracking-tight">
                                 {isMe ? (language === "bn" ? "আমার নোড (You)" : "My Node") : msg.senderName}
@@ -2976,6 +3421,35 @@ export default function App() {
                                 )}
                               </div>
 
+                              {/* Display Active Reactions list below bubble */}
+                              {msg.reactions && Object.keys(msg.reactions).some(emoji => ((msg.reactions as Record<string, string[]>)[emoji] || []).length > 0) && (
+                                <div className={`flex flex-wrap gap-1 mt-1 ${isMe ? "justify-end" : "justify-start"}`}>
+                                  {Object.entries(msg.reactions).map(([emoji, val]) => {
+                                    const userIds = val as string[];
+                                    if (!userIds || userIds.length === 0) return null;
+                                    const hasReacted = userIds.includes(sessionSenderId);
+                                    return (
+                                      <button
+                                        key={emoji}
+                                        onClick={() => toggleReaction(msg.id, emoji)}
+                                        className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] font-extrabold border transition-all ${
+                                          hasReacted
+                                            ? (theme === "dark" 
+                                                ? "bg-blue-500/20 border-blue-500/40 text-blue-300" 
+                                                : "bg-blue-50 border-blue-200 text-blue-600")
+                                            : (theme === "dark"
+                                                ? "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200"
+                                                : "bg-slate-100 border-slate-200 text-slate-500 hover:text-slate-800")
+                                        }`}
+                                        title={`${userIds.length} reaction(s)`}
+                                      >
+                                        <span>{emoji}</span>
+                                        <span className="text-[8px] font-mono font-bold">${userIds.length}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
                               {/* Formatted time stamp */}
                               <span className="text-[8px] text-slate-450 mt-0.5 px-1 font-mono">
                                 {useRelativeChatTime 
