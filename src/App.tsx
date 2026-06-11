@@ -312,9 +312,10 @@ export default function App() {
   const [liveOwnerName, setLiveOwnerName] = useState<string>("");
   const [liveOwnerEmail, setLiveOwnerEmail] = useState<string>("");
   const [livePermissions, setLivePermissions] = useState<Record<string, { edit?: boolean; download?: boolean; email?: string; name?: string }>>({});
-  const [liveActiveEditors, setLiveActiveEditors] = useState<Record<string, { name: string; isEditing: boolean; updatedAt: number }>>({});
+  const [liveActiveEditors, setLiveActiveEditors] = useState<Record<string, { name: string; isEditing: boolean; isTypingChat?: boolean; updatedAt: number }>>({});
   const [liveParticipants, setLiveParticipants] = useState<Record<string, { uid: string; email: string; name: string; deviceId: string; lastSeen: number }>>({});
   const lastTypedRef = useRef<number>(0);
+  const lastChatTypedRef = useRef<number>(0);
 
   // Collaborative Room Listener
   useEffect(() => {
@@ -420,6 +421,24 @@ export default function App() {
 
     return () => clearInterval(timer);
   }, [currentRoomCode, currentUser, liveActiveEditors, deviceId]);
+
+  // 2s Idle Chat Typing Timer to reset chat typing flag
+  useEffect(() => {
+    if (!currentRoomCode) return;
+    const myUserId = currentUser?.uid || deviceId;
+
+    const timer = setInterval(() => {
+      const weAreIdle = Date.now() - lastChatTypedRef.current > 3000;
+      if (weAreIdle && liveActiveEditors[myUserId]?.isTypingChat) {
+        const docRef = doc(db, "liveCoding", currentRoomCode);
+        updateDoc(docRef, {
+          [`activeEditors.${myUserId}.isTypingChat`]: false
+        }).catch(err => {});
+      }
+    }, 2000);
+
+    return () => clearInterval(timer);
+  }, [currentRoomCode, currentUser, liveActiveEditors, deviceId]);
   
   // UI states
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string>("");
@@ -510,6 +529,23 @@ export default function App() {
       }, 100);
     }
   }, [roomData?.messages?.length]);
+
+  // Compute list of users typing in chat currently
+  const typingUsers = useMemo(() => {
+    return Object.keys(liveActiveEditors)
+      .filter((uid) => uid !== (currentUser?.uid || deviceId))
+      .map((uid) => liveActiveEditors[uid])
+      .filter((editor) => editor.isTypingChat === true);
+  }, [liveActiveEditors, currentUser, deviceId]);
+
+  // Scroll to bottom when someone starts typing to ensure they see the visual indicator
+  useEffect(() => {
+    if (typingUsers.length > 0) {
+      setTimeout(() => {
+        chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      }, 100);
+    }
+  }, [typingUsers.length]);
 
   // Clean recording timers on component unmount
   useEffect(() => {
@@ -666,7 +702,14 @@ export default function App() {
         if (type === "text") {
           setChatInputText("");
         }
-        // Force silent refreshes
+        // Force silent refreshes and cancel active typing indicators
+        lastChatTypedRef.current = 0;
+        const myUserId = currentUser?.uid || deviceId;
+        const docRef = doc(db, "liveCoding", currentRoomCode);
+        updateDoc(docRef, {
+          [`activeEditors.${myUserId}.isTypingChat`]: false
+        }).catch(() => {});
+
         fetchRoomInfo(currentRoomCode, true);
         
         setTimeout(() => {
@@ -678,6 +721,38 @@ export default function App() {
       }
     } catch (e) {
       showStatus("Connection error transmitting chat message.", "error");
+    }
+  };
+
+  // Set real-time 'typing' status inside Firestore activeEditors state
+  const handleChatInputChange = (val: string) => {
+    setChatInputText(val);
+
+    if (!currentRoomCode) return;
+    const now = Date.now();
+    const myUserId = currentUser?.uid || deviceId;
+    const myUserName = currentUser?.displayName || currentUser?.email?.split("@")[0] || guestNickname;
+    
+    // Check if we should update Firestore (throttle updates to every 4.5 seconds to respect limits)
+    const wasAlreadyTyping = now - lastChatTypedRef.current < 4500 && liveActiveEditors[myUserId]?.isTypingChat;
+    
+    lastChatTypedRef.current = now;
+
+    if (!wasAlreadyTyping && val.trim().length > 0) {
+      const docRef = doc(db, "liveCoding", currentRoomCode);
+      updateDoc(docRef, {
+        [`activeEditors.${myUserId}.name`]: myUserName,
+        [`activeEditors.${myUserId}.isTypingChat`]: true,
+        [`activeEditors.${myUserId}.updatedAt`]: now,
+      }).catch(err => {
+        console.warn("Could not set typing indicator:", err);
+      });
+    } else if (val.trim().length === 0 && liveActiveEditors[myUserId]?.isTypingChat) {
+      // If we completely cleared our typing input, mark typing flag as false immediately
+      const docRef = doc(db, "liveCoding", currentRoomCode);
+      updateDoc(docRef, {
+        [`activeEditors.${myUserId}.isTypingChat`]: false
+      }).catch(err => {});
     }
   };
 
@@ -3358,6 +3433,7 @@ export default function App() {
                             return (
                               <motion.div 
                                 key={file.id} 
+                                layout
                                 initial={{ opacity: 0, y: 15 }}
                                 animate={{ opacity: 1, y: 0 }}
                                 exit={{ opacity: 0, scale: 0.96, height: 0, transition: { duration: 0.2 } }}
@@ -3401,7 +3477,7 @@ export default function App() {
                                       {file.name}
                                     </span>
                                     
-                                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1 text-[10px] text-slate-450 font-medium">
+                                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1 text-[10px] text-slate-455 font-medium">
                                       <span className={`font-bold font-mono px-1 py-0.2 rounded text-slate-500 border ${theme === "dark" ? "bg-slate-955 border-slate-850" : "bg-slate-100 border-slate-200"}`}>
                                         {formatBytes(file.size)}
                                       </span>
@@ -3529,13 +3605,13 @@ export default function App() {
                       <div className="flex items-center gap-2">
                         <button 
                           onClick={() => setUseRelativeChatTime(!useRelativeChatTime)}
-                          className="flex items-center gap-1 font-mono text-[9px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 bg-slate-100 dark:bg-slate-950 px-2.5 py-1 border dark:border-slate-800 rounded-lg transition-colors cursor-pointer"
+                          className="flex items-center gap-1 font-mono text-[9px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 bg-slate-100 dark:bg-slate-955 px-2.5 py-1 border dark:border-slate-800 rounded-lg transition-colors cursor-pointer"
                           title={language === "bn" ? "সময়ের ধরন পরিবর্তন করুন" : "Toggle Time Format"}
                         >
                           <Clock className="h-3 w-3" />
                           <span>{useRelativeChatTime ? (language === "bn" ? "রিলেটিভ" : "REL") : (language === "bn" ? "অ্যাবসলিউট" : "ABS")}</span>
                         </button>
-                        <div className="flex items-center gap-1 font-mono text-[9px] text-slate-400 bg-slate-100 dark:bg-slate-950 px-2.5 py-1 border dark:border-slate-800 rounded-lg">
+                        <div className="flex items-center gap-1 font-mono text-[9px] text-slate-400 bg-slate-100 dark:bg-slate-955 px-2.5 py-1 border dark:border-slate-800 rounded-lg">
                           <Clock className="h-3 w-3 text-amber-500" />
                           <span>1H LIMIT</span>
                         </div>
@@ -3546,31 +3622,41 @@ export default function App() {
                     <div className="flex-1 overflow-y-auto p-4 space-y-4 flex flex-col scrollbar-thin scrollbar-thumb-slate-800 select-text">
                       {(!roomData?.messages || roomData.messages.length === 0) ? (
                         <div className="flex-1 flex flex-col items-center justify-center p-6 text-slate-500 text-center gap-3">
-                          <div className={`h-12 w-12 rounded-full flex items-center justify-center ${theme === "dark" ? "bg-slate-950" : "bg-slate-50"}`}>
+                          <div className={`h-12 w-12 rounded-full flex items-center justify-center ${theme === "dark" ? "bg-slate-955" : "bg-slate-50"}`}>
                             <MessageSquare className="h-6 w-6 text-slate-400 stroke-[1.5]" />
                           </div>
-                          <p className="text-[11px] leading-relaxed italic text-slate-450 max-w-[220px]">
+                          <p className="text-[11px] leading-relaxed italic text-slate-455 max-w-[220px]">
                             {language === "bn" 
                               ? "চ্যাটে কোনো মেসেজ নেই। কুইক মেসেজ পাঠাতে নিচে টাইপ করুন বা রিমোট নোডের জন্য ভয়েস রেকর্ড পাঠান!"
                               : "Tunnel messaging is empty. Type instructions or transmit audio clips seamlessly!"}
                           </p>
                         </div>
                       ) : (
-                        roomData.messages.map((msg) => {
-                          const isMe = msg.senderId === sessionSenderId;
-                          
-                          return (
-                            <div 
-                              key={msg.id} 
-                              className={`flex flex-col max-w-[85%] text-left ${isMe ? "self-end items-end" : "self-start items-start"} group relative`}
-                            >
+                        <AnimatePresence initial={false}>
+                          {roomData.messages.map((msg) => {
+                            const isMe = msg.senderId === sessionSenderId;
+                            const isAdmin = !!(
+                              (roomData?.ownerId && (currentUser?.uid === roomData.ownerId || deviceId === roomData.ownerId)) ||
+                              (liveOwnerId && (currentUser?.uid === liveOwnerId || deviceId === liveOwnerId))
+                            );
+                            
+                            return (
+                              <motion.div 
+                                key={msg.id} 
+                                layout
+                                initial={{ opacity: 0, x: isMe ? 20 : -20, y: 10 }}
+                                animate={{ opacity: 1, x: 0, y: 0 }}
+                                exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.15 } }}
+                                transition={{ type: "spring", stiffness: 350, damping: 28 }}
+                                className={`flex flex-col max-w-[85%] text-left ${isMe ? "self-end items-end" : "self-start items-start"} group relative`}
+                              >
                               {/* Hover Reaction trigger / Picker */}
                               <div className={`absolute -top-3.5 z-15 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-all duration-200 ${
                                 isMe ? "right-1" : "left-1"
                               }`}>
                                 <div className={`flex items-center gap-1 p-1 rounded-full border shadow-md ${
                                   theme === "dark" 
-                                    ? "bg-slate-950 border-slate-800"
+                                    ? "bg-slate-955 border-slate-800"
                                     : "bg-white border-slate-200"
                                 }`}>
                                   {["👍", "❤️", "😄", "😮", "😢", "🔥"].map((emoji) => {
@@ -3607,8 +3693,8 @@ export default function App() {
                                     )}
                                   </button>
 
-                                  {/* Delete Button (if authorized: message sender OR room owner) */}
-                                  {((roomData?.ownerId && (currentUser?.uid === roomData?.ownerId || deviceId === roomData?.ownerId)) || isMe) && (
+                                  {/* Delete Button (if authorized: Admin only) */}
+                                  {isAdmin && (
                                     <button
                                       onClick={() => deleteChatMessage(msg.id)}
                                       className={`h-5 w-5 flex items-center justify-center rounded-full hover:scale-110 active:scale-95 transition-all text-slate-400 hover:text-red-500 hover:bg-red-500/10`}
@@ -3626,13 +3712,32 @@ export default function App() {
                               </span>
 
                               {/* Speech bubble contents */}
-                              <div className={`p-3 rounded-2xl text-xs leading-relaxed break-all border ${
+                              <div className={`p-3 pr-11 rounded-2xl text-xs leading-relaxed break-all border relative group/bubble ${
                                 isMe 
                                   ? "bg-blue-600 border-blue-500 text-white rounded-tr-none" 
                                   : theme === "dark"
                                   ? "bg-slate-955 border-slate-800 text-slate-200 rounded-tl-none"
                                   : "bg-slate-50 border-slate-200 text-slate-800 rounded-tl-none"
                               }`}>
+                                {/* Corner Large Copy Button */}
+                                <button
+                                  onClick={() => copyMessageText(msg)}
+                                  className={`absolute top-2.5 right-2.5 p-1.5 rounded-lg border transition-all duration-200 active:scale-95 flex items-center justify-center cursor-pointer shadow-sm ${
+                                    isMe 
+                                      ? "bg-white/10 hover:bg-white/20 border-white/20 text-white" 
+                                      : theme === "dark" 
+                                      ? "bg-slate-900 border-slate-800 hover:bg-slate-800 text-slate-300 hover:text-white" 
+                                      : "bg-white border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-slate-900"
+                                  }`}
+                                  title={language === "bn" ? "মেসেজ কপি করুন" : "Copy Message"}
+                                >
+                                  {copiedMessageId === msg.id ? (
+                                    <Check className="h-4 w-4 text-emerald-400 stroke-[2.5]" />
+                                  ) : (
+                                    <Copy className="h-4 w-4" />
+                                  )}
+                                </button>
+
                                 {msg.type === "text" && (
                                   <p className="whitespace-pre-wrap select-text font-medium leading-relaxed">{msg.content}</p>
                                 )}
@@ -3723,7 +3828,7 @@ export default function App() {
                                         title={`${userIds.length} reaction(s)`}
                                       >
                                         <span>{emoji}</span>
-                                        <span className="text-[8px] font-mono font-bold">${userIds.length}</span>
+                                        <span className="text-[8px] font-mono font-bold">{userIds.length}</span>
                                       </button>
                                     );
                                   })}
@@ -3749,7 +3854,7 @@ export default function App() {
                                   )}
                                 </button>
 
-                                {((roomData?.ownerId && (currentUser?.uid === roomData?.ownerId || deviceId === roomData?.ownerId)) || isMe) && (
+                                {isAdmin && (
                                   <>
                                     <span className="opacity-40">•</span>
                                     <button
@@ -3762,10 +3867,35 @@ export default function App() {
                                   </>
                                 )}
                               </div>
-                            </div>
+                            </motion.div>
                           );
-                        })
+                        })}
+                        </AnimatePresence>
                       )}
+
+                      {/* Real-time "Typing" Indicators */}
+                      {typingUsers.length > 0 && (
+                        <div className="flex items-center gap-2 self-start animate-fade-in text-[10.5px] px-1 py-1 max-w-[85%] select-none">
+                          <div className={`flex items-center gap-2 px-3 py-2 rounded-2xl border ${
+                            theme === "dark" 
+                              ? "bg-slate-900 border-slate-800 text-slate-300" 
+                              : "bg-slate-100 border-slate-200 text-slate-600"
+                          }`}>
+                            <div className="flex gap-1 items-center">
+                              <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: '0ms' }} />
+                              <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: '150ms' }} />
+                              <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: '300ms' }} />
+                            </div>
+                            <span className="font-sans font-medium">
+                              {language === "bn" 
+                                ? `${typingUsers.map(u => u.name).join(", ")} টাইপ করছেন...` 
+                                : `${typingUsers.map(u => u.name).join(", ")} ${typingUsers.length === 1 ? "is" : "are"} typing...`
+                              }
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
                       <div ref={chatBottomRef} />
                     </div>
 
@@ -3865,7 +3995,7 @@ export default function App() {
                           theme === "dark" ? "bg-slate-950 border-slate-800 text-white" : "bg-white border-slate-200 text-slate-950"
                         }`}
                         value={chatInputText}
-                        onChange={(e) => setChatInputText(e.target.value)}
+                        onChange={(e) => handleChatInputChange(e.target.value)}
                         onKeyDown={(e) => {
                           if (e.key === "Enter") sendChatMessage();
                         }}

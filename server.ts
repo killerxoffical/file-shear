@@ -525,12 +525,11 @@ app.post("/api/chat/:roomId/delete", (req, res) => {
 
   const message = room.messages[messageIndex];
   
-  // Authorization check: Is room owner? OR is message sender?
+  // Authorization check: Only Room Owner (Admin) can delete any chat message.
   const isRoomOwner = !!(room.ownerId && room.ownerId === senderId);
-  const isMessageSender = message.senderId === senderId;
 
-  if (!isRoomOwner && !isMessageSender) {
-    return res.status(403).json({ error: "Unauthorized to delete this message." });
+  if (!isRoomOwner) {
+    return res.status(403).json({ error: "Only the Room Owner/Admin is authorized to delete messages." });
   }
 
   // Delete message
